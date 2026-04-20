@@ -13,8 +13,8 @@ use crate::git::{Author, FileDelta};
 pub struct AuthorStats {
     pub name: String,
     pub email: String,
-    pub commits: u64,
-    pub prs_attributed: u64,
+    pub contributions: u64,
+    pub prs: u64,
     pub additions: u64,
     pub deletions: u64,
 }
@@ -51,18 +51,25 @@ impl StatsAccumulator {
     /// Attribute a set of file deltas to a single author (regular commit).
     pub fn attribute(&mut self, author: &Author, deltas: &[FileDelta]) {
         let entry = self.get_or_insert(author);
-        entry.commits += 1;
+        entry.contributions += 1;
         for d in deltas {
             entry.additions += d.additions;
             entry.deletions += d.deletions;
         }
     }
 
+    /// Increment the PR counter for an author without changing
+    /// contributions or line counts.
+    pub fn mark_pr(&mut self, author: &Author) {
+        let entry = self.get_or_insert(author);
+        entry.prs += 1;
+    }
+
     /// Attribute a squash-merge proportionally to individual PR authors.
     ///
-    /// `pr_author_deltas` maps each PR author to their individual commit
-    /// file deltas (from the GitHub API). `squash_deltas` are the actual
-    /// deltas from the squash commit (the source of truth for totals).
+    /// `pr_author_deltas` contains one entry per PR commit (may have
+    /// duplicates for the same author). This method aggregates by unique
+    /// author before computing proportional attribution.
     pub fn attribute_squash_merge(
         &mut self,
         pr_author_deltas: &[(Author, Vec<FileDelta>)],
@@ -71,8 +78,8 @@ impl StatsAccumulator {
         let total_squash_adds: u64 = squash_deltas.iter().map(|d| d.additions).sum();
         let total_squash_dels: u64 = squash_deltas.iter().map(|d| d.deletions).sum();
 
-        // Sum each author's contributions across their PR commits.
-        let mut author_totals: Vec<(&Author, u64, u64)> = Vec::new();
+        // Aggregate by unique author (email) — fixes double-counting bug.
+        let mut aggregated: HashMap<String, (&Author, u64, u64)> = HashMap::new();
         let mut grand_adds: u64 = 0;
         let mut grand_dels: u64 = 0;
 
@@ -81,12 +88,15 @@ impl StatsAccumulator {
             let dels: u64 = deltas.iter().map(|d| d.deletions).sum();
             grand_adds += adds;
             grand_dels += dels;
-            author_totals.push((author, adds, dels));
+            let entry = aggregated
+                .entry(author.email.clone())
+                .or_insert((author, 0, 0));
+            entry.1 += adds;
+            entry.2 += dels;
         }
 
-        // Attribute proportionally.
-        let num_authors = author_totals.len() as u64;
-        for (author, adds, dels) in &author_totals {
+        let num_authors = aggregated.len() as u64;
+        for (author, adds, dels) in aggregated.values() {
             let attributed_adds = if grand_adds > 0 {
                 total_squash_adds * adds / grand_adds
             } else {
@@ -99,7 +109,8 @@ impl StatsAccumulator {
             };
 
             let entry = self.get_or_insert(author);
-            entry.prs_attributed += 1;
+            entry.contributions += 1;
+            entry.prs += 1;
             entry.additions += attributed_adds;
             entry.deletions += attributed_dels;
         }
@@ -166,7 +177,7 @@ mod tests {
         acc.attribute(&alice(), &[delta("b.rs", 5, 1)]);
         let report = acc.finalize();
         assert_eq!(report.authors.len(), 1);
-        assert_eq!(report.authors[0].commits, 2);
+        assert_eq!(report.authors[0].contributions, 2);
         assert_eq!(report.authors[0].additions, 15);
         assert_eq!(report.authors[0].deletions, 3);
     }
@@ -178,7 +189,6 @@ mod tests {
         acc.attribute(&bob(), &[delta("b.rs", 20, 5)]);
         let report = acc.finalize();
         assert_eq!(report.authors.len(), 2);
-        // Bob has more total lines, should be first.
         assert_eq!(report.authors[0].name, "Bob");
         assert_eq!(report.authors[1].name, "Alice");
     }
@@ -186,14 +196,10 @@ mod tests {
     #[test]
     fn attribute_squash_merge_proportional() {
         let mut acc = StatsAccumulator::default();
-
-        // Alice contributed 75% of adds, Bob 25%.
         let pr_deltas = vec![
             (alice(), vec![delta("a.rs", 75, 0)]),
             (bob(), vec![delta("b.rs", 25, 0)]),
         ];
-
-        // The squash commit has 100 additions total.
         let squash_deltas = vec![delta("merged.rs", 100, 0)];
 
         acc.attribute_squash_merge(&pr_deltas, &squash_deltas);
@@ -208,13 +214,14 @@ mod tests {
 
         assert_eq!(alice_stats.additions, 75);
         assert_eq!(bob_stats.additions, 25);
-        assert_eq!(alice_stats.prs_attributed, 1);
-        assert_eq!(bob_stats.prs_attributed, 1);
+        assert_eq!(alice_stats.prs, 1);
+        assert_eq!(bob_stats.prs, 1);
+        assert_eq!(alice_stats.contributions, 1);
+        assert_eq!(bob_stats.contributions, 1);
     }
 
     #[test]
     fn attribute_squash_merge_zero_totals() {
-        // Edge case: PR commits have zero additions, split equally.
         let mut acc = StatsAccumulator::default();
         let pr_deltas = vec![
             (alice(), vec![delta("a.rs", 0, 0)]),
@@ -227,11 +234,40 @@ mod tests {
         let alice_stats = report.authors.iter().find(|a| a.name == "Alice").unwrap();
         let bob_stats = report.authors.iter().find(|a| a.name == "Bob").unwrap();
 
-        // 10 / 2 = 5 each, 4 / 2 = 2 each.
         assert_eq!(alice_stats.additions, 5);
         assert_eq!(bob_stats.additions, 5);
         assert_eq!(alice_stats.deletions, 2);
         assert_eq!(bob_stats.deletions, 2);
+    }
+
+    #[test]
+    fn attribute_squash_merge_same_author_multiple_commits() {
+        // Alice has 3 commits in the same PR — should get prs=1, not 3.
+        let mut acc = StatsAccumulator::default();
+        let pr_deltas = vec![
+            (alice(), vec![delta("a.rs", 30, 0)]),
+            (alice(), vec![delta("b.rs", 40, 0)]),
+            (alice(), vec![delta("c.rs", 30, 0)]),
+        ];
+        let squash_deltas = vec![delta("merged.rs", 100, 0)];
+        acc.attribute_squash_merge(&pr_deltas, &squash_deltas);
+        let report = acc.finalize();
+
+        assert_eq!(report.authors.len(), 1);
+        assert_eq!(report.authors[0].prs, 1);
+        assert_eq!(report.authors[0].contributions, 1);
+        assert_eq!(report.authors[0].additions, 100);
+    }
+
+    #[test]
+    fn mark_pr_increments_only_prs() {
+        let mut acc = StatsAccumulator::default();
+        acc.attribute(&alice(), &[delta("a.rs", 10, 0)]);
+        acc.mark_pr(&alice());
+        let report = acc.finalize();
+        assert_eq!(report.authors[0].contributions, 1);
+        assert_eq!(report.authors[0].prs, 1);
+        assert_eq!(report.authors[0].additions, 10);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::LazyLock;
 
-use git2::{Diff, DiffOptions, Repository, Revwalk, Sort};
+use git2::{Diff, DiffOptions, Mailmap, Repository, Revwalk, Sort};
 use regex::Regex;
 
 use crate::error::CreditError;
@@ -55,8 +55,31 @@ pub fn open_repo(path: &Path) -> Result<Repository, CreditError> {
     })
 }
 
+/// Resolve an author through a mailmap, falling back to the original
+/// name/email when no mailmap is provided or resolution fails.
+pub fn resolve_author(mailmap: &Option<Mailmap>, name: &str, email: &str) -> Author {
+    if let Some(mm) = mailmap {
+        if let Ok(sig) = git2::Signature::now(name, email) {
+            if let Ok(resolved) = mm.resolve_signature(&sig) {
+                return Author {
+                    name: resolved.name().unwrap_or(name).to_string(),
+                    email: resolved.email().unwrap_or(email).to_string(),
+                };
+            }
+        }
+    }
+    Author {
+        name: name.to_string(),
+        email: email.to_string(),
+    }
+}
+
 /// Walk commits according to the given options, computing diffs for each.
-pub fn walk_commits(repo: &Repository, opts: &WalkOptions) -> Result<Vec<CommitInfo>, CreditError> {
+pub fn walk_commits(
+    repo: &Repository,
+    opts: &WalkOptions,
+    mailmap: &Option<Mailmap>,
+) -> Result<Vec<CommitInfo>, CreditError> {
     let mut revwalk = setup_revwalk(repo, opts)?;
     let mut commits = Vec::new();
 
@@ -71,10 +94,11 @@ pub fn walk_commits(repo: &Repository, opts: &WalkOptions) -> Result<Vec<CommitI
         }
 
         let sig = commit.author();
-        let author = Author {
-            name: sig.name().unwrap_or("Unknown").to_string(),
-            email: sig.email().unwrap_or("unknown").to_string(),
-        };
+        let author = resolve_author(
+            mailmap,
+            sig.name().unwrap_or("Unknown"),
+            sig.email().unwrap_or("unknown"),
+        );
         let message = commit.message().unwrap_or("").to_string();
         let parent_count = commit.parent_count();
         let deltas = diff_commit(repo, &commit)?;
@@ -385,10 +409,49 @@ mod tests {
             rev_range: None,
             since: None,
         };
-        let commits = walk_commits(&repo, &opts).unwrap();
+        let commits = walk_commits(&repo, &opts, &None).unwrap();
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].message, "second");
         assert_eq!(commits[1].message, "first");
         assert_eq!(commits[0].author.name, "Alice");
+    }
+
+    #[test]
+    fn walk_commits_with_mailmap() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        let sig = git2::Signature::now("Alice Old", "alice-old@example.com").unwrap();
+
+        let blob = repo.blob(b"hello\n").unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert("file.txt", blob, 0o100_644).unwrap();
+        let tree = repo.find_tree(tb.write().unwrap()).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "first", &tree, &[])
+            .unwrap();
+
+        let mut mm = Mailmap::new().unwrap();
+        mm.add_entry(
+            Some("Alice New"),
+            Some("alice-new@example.com"),
+            Some("Alice Old"),
+            "alice-old@example.com",
+        )
+        .unwrap();
+
+        let opts = WalkOptions {
+            rev_range: None,
+            since: None,
+        };
+        let commits = walk_commits(&repo, &opts, &Some(mm)).unwrap();
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].author.name, "Alice New");
+        assert_eq!(commits[0].author.email, "alice-new@example.com");
+    }
+
+    #[test]
+    fn resolve_author_without_mailmap() {
+        let author = resolve_author(&None, "Alice", "alice@example.com");
+        assert_eq!(author.name, "Alice");
+        assert_eq!(author.email, "alice@example.com");
     }
 }

@@ -30,7 +30,7 @@ fn render_table(report: &CreditReport) {
         .set_content_arrangement(ContentArrangement::Dynamic)
         .set_header(vec![
             Cell::new("Author"),
-            Cell::new("Commits"),
+            Cell::new("Contributions"),
             Cell::new("PRs"),
             Cell::new("+"),
             Cell::new("-"),
@@ -40,8 +40,8 @@ fn render_table(report: &CreditReport) {
     for author in &report.authors {
         table.add_row(vec![
             Cell::new(format!("{} <{}>", author.name, author.email)),
-            Cell::new(format_number(author.commits)),
-            Cell::new(format_number(author.prs_attributed)),
+            Cell::new(format_number(author.contributions)),
+            Cell::new(format_number(author.prs)),
             Cell::new(format_number(author.additions)),
             Cell::new(format_number(author.deletions)),
             Cell::new(format_number(author.additions + author.deletions)),
@@ -100,8 +100,8 @@ mod tests {
             authors: vec![AuthorStats {
                 name: "Alice".into(),
                 email: "alice@example.com".into(),
-                commits: 5,
-                prs_attributed: 2,
+                contributions: 5,
+                prs: 2,
                 additions: 100,
                 deletions: 50,
             }],
