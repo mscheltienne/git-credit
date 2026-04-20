@@ -1,7 +1,7 @@
 # git-credit
 
 [![CI](https://github.com/mscheltienne/git-credit/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/mscheltienne/git-credit/actions/workflows/ci.yaml)
-[![codecov](https://codecov.io/gh/mscheltienne/git-credit/graph/badge.svg)](https://codecov.io/gh/mscheltienne/git-credit)
+[![codecov](https://codecov.io/gh/mscheltienne/git-credit/graph/badge.svg?token=ez0tTYjMnY)](https://codecov.io/gh/mscheltienne/git-credit)
 [![Crates.io](https://img.shields.io/crates/v/git-credit)](https://crates.io/crates/git-credit)
 [![License: MIT](https://img.shields.io/crates/l/git-credit)](LICENSE)
 [![MSRV](https://img.shields.io/crates/msrv/git-credit)](Cargo.toml)
