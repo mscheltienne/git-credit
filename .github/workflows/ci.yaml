@@ -1,4 +1,4 @@
-name: CI
+name: ci
 on:  # yamllint disable-line rule:truthy
   push:
     branches: [main]
