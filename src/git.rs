@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::LazyLock;
 
-use git2::{Diff, DiffOptions, Mailmap, Repository, Revwalk, Sort};
+use git2::{DiffOptions, Mailmap, Repository, Revwalk, Sort};
 use regex::Regex;
 
 use crate::error::CreditError;
@@ -59,7 +59,7 @@ pub fn open_repo(path: &Path) -> Result<Repository, CreditError> {
 /// name/email when no mailmap is provided or resolution fails.
 pub fn resolve_author(mailmap: &Option<Mailmap>, name: &str, email: &str) -> Author {
     if let Some(mm) = mailmap {
-        if let Ok(sig) = git2::Signature::now(name, email) {
+        if let Ok(sig) = git2::Signature::new(name, email, &git2::Time::new(0, 0)) {
             if let Ok(resolved) = mm.resolve_signature(&sig) {
                 return Author {
                     name: resolved.name().unwrap_or(name).to_string(),
@@ -129,7 +129,7 @@ pub fn diff_commit(
     };
 
     let mut opts = DiffOptions::new();
-    let diff: Diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
+    let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
 
     let mut deltas = Vec::new();
 
@@ -142,7 +142,6 @@ pub fn diff_commit(
             .unwrap_or("")
             .to_string();
 
-        // Use the patch to count additions and deletions per file.
         let file_patch = git2::Patch::from_diff(&diff, i)?;
         if let Some(file_patch) = file_patch {
             let (_, adds, dels) = file_patch.line_stats()?;
@@ -271,49 +270,41 @@ mod tests {
         );
     }
 
-    #[test]
-    fn is_squash_merge_with_pr() {
-        let commit = CommitInfo {
+    fn make_commit(message: &str, parent_count: usize) -> CommitInfo {
+        CommitInfo {
             oid: git2::Oid::zero(),
             author: Author {
                 name: "Test".into(),
                 email: "test@test.com".into(),
             },
-            message: "feat: add thing (#42)".into(),
-            parent_count: 1,
+            message: message.into(),
+            parent_count,
             deltas: vec![],
-        };
-        assert_eq!(is_squash_merge(&commit), Some(42));
+        }
+    }
+
+    #[test]
+    fn is_squash_merge_with_pr() {
+        assert_eq!(
+            is_squash_merge(&make_commit("feat: add thing (#42)", 1)),
+            Some(42)
+        );
     }
 
     #[test]
     fn is_squash_merge_merge_commit() {
-        let commit = CommitInfo {
-            oid: git2::Oid::zero(),
-            author: Author {
-                name: "Test".into(),
-                email: "test@test.com".into(),
-            },
-            message: "Merge pull request #42".into(),
-            parent_count: 2,
-            deltas: vec![],
-        };
-        assert_eq!(is_squash_merge(&commit), None);
+        assert_eq!(
+            is_squash_merge(&make_commit("Merge pull request #42", 2)),
+            None
+        );
     }
 
     #[test]
     fn is_squash_merge_no_pr() {
-        let commit = CommitInfo {
-            oid: git2::Oid::zero(),
-            author: Author {
-                name: "Test".into(),
-                email: "test@test.com".into(),
-            },
-            message: "just a regular commit".into(),
-            parent_count: 1,
-            deltas: vec![],
-        };
-        assert_eq!(is_squash_merge(&commit), None);
+        assert_eq!(
+            is_squash_merge(&make_commit("just a regular commit", 1)),
+            None
+        );
     }
 
     #[test]

@@ -96,17 +96,15 @@ impl StatsAccumulator {
         }
 
         let num_authors = aggregated.len() as u64;
+        let equal_adds = total_squash_adds / num_authors.max(1);
+        let equal_dels = total_squash_dels / num_authors.max(1);
         for (author, adds, dels) in aggregated.values() {
-            let attributed_adds = if grand_adds > 0 {
-                total_squash_adds * adds / grand_adds
-            } else {
-                total_squash_adds / num_authors.max(1)
-            };
-            let attributed_dels = if grand_dels > 0 {
-                total_squash_dels * dels / grand_dels
-            } else {
-                total_squash_dels / num_authors.max(1)
-            };
+            let attributed_adds = (total_squash_adds * adds)
+                .checked_div(grand_adds)
+                .unwrap_or(equal_adds);
+            let attributed_dels = (total_squash_dels * dels)
+                .checked_div(grand_dels)
+                .unwrap_or(equal_dels);
 
             let entry = self.get_or_insert(author);
             entry.contributions += 1;
@@ -121,7 +119,7 @@ impl StatsAccumulator {
     /// descending.
     pub fn finalize(self) -> CreditReport {
         let mut authors: Vec<AuthorStats> = self.map.into_values().collect();
-        authors.sort_by(|a, b| (b.additions + b.deletions).cmp(&(a.additions + a.deletions)));
+        authors.sort_by_key(|a| std::cmp::Reverse(a.additions + a.deletions));
         CreditReport {
             authors,
             total_commits_walked: self.total_commits_walked,
