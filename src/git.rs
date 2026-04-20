@@ -19,6 +19,16 @@ pub struct Author {
     pub email: String,
 }
 
+impl Author {
+    pub fn is_bot(&self) -> bool {
+        is_bot_email(&self.email)
+    }
+}
+
+pub fn is_bot_email(email: &str) -> bool {
+    email.contains("[bot]@")
+}
+
 /// A single file change in a diff.
 #[derive(Debug, Clone)]
 pub struct FileDelta {
@@ -57,7 +67,7 @@ pub fn open_repo(path: &Path) -> Result<Repository, CreditError> {
 
 /// Resolve an author through a mailmap, falling back to the original
 /// name/email when no mailmap is provided or resolution fails.
-pub fn resolve_author(mailmap: &Option<Mailmap>, name: &str, email: &str) -> Author {
+pub fn resolve_author(mailmap: Option<&Mailmap>, name: &str, email: &str) -> Author {
     if let Some(mm) = mailmap
         && let Ok(sig) = git2::Signature::new(name, email, &git2::Time::new(0, 0))
         && let Ok(resolved) = mm.resolve_signature(&sig)
@@ -77,7 +87,7 @@ pub fn resolve_author(mailmap: &Option<Mailmap>, name: &str, email: &str) -> Aut
 pub fn walk_commits(
     repo: &Repository,
     opts: &WalkOptions,
-    mailmap: &Option<Mailmap>,
+    mailmap: Option<&Mailmap>,
 ) -> Result<Vec<CommitInfo>, CreditError> {
     let mut revwalk = setup_revwalk(repo, opts)?;
     let mut commits = Vec::new();
@@ -399,7 +409,7 @@ mod tests {
             rev_range: None,
             since: None,
         };
-        let commits = walk_commits(&repo, &opts, &None).unwrap();
+        let commits = walk_commits(&repo, &opts, None).unwrap();
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].message, "second");
         assert_eq!(commits[1].message, "first");
@@ -432,7 +442,7 @@ mod tests {
             rev_range: None,
             since: None,
         };
-        let commits = walk_commits(&repo, &opts, &Some(mm)).unwrap();
+        let commits = walk_commits(&repo, &opts, Some(&mm)).unwrap();
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].author.name, "Alice New");
         assert_eq!(commits[0].author.email, "alice-new@example.com");
@@ -440,7 +450,7 @@ mod tests {
 
     #[test]
     fn resolve_author_without_mailmap() {
-        let author = resolve_author(&None, "Alice", "alice@example.com");
+        let author = resolve_author(None, "Alice", "alice@example.com");
         assert_eq!(author.name, "Alice");
         assert_eq!(author.email, "alice@example.com");
     }

@@ -25,6 +25,7 @@ pub struct CreditReport {
     pub authors: Vec<AuthorStats>,
     pub total_commits_walked: u64,
     pub squash_merges_expanded: u64,
+    pub bots_excluded: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +125,7 @@ impl StatsAccumulator {
             authors,
             total_commits_walked: self.total_commits_walked,
             squash_merges_expanded: self.squash_merges_expanded,
+            bots_excluded: 0,
         }
     }
 

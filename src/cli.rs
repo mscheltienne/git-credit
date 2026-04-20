@@ -33,6 +33,10 @@ pub struct Cli {
     /// Skip GitHub API lookups for squash-merge attribution.
     #[arg(long)]
     pub no_github: bool,
+
+    /// Include bot accounts in the output (excluded by default).
+    #[arg(long)]
+    pub bots: bool,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -53,6 +57,7 @@ mod tests {
         assert!(cli.since.is_none());
         assert!(cli.rev.is_none());
         assert!(!cli.no_github);
+        assert!(!cli.bots);
         assert!(matches!(cli.format, OutputFormat::Table));
     }
 

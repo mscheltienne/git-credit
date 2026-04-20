@@ -62,10 +62,19 @@ git-credit --exclude "*.lock" --exclude "*.generated.*"
 # Output as JSON instead of a table
 git-credit --format json
 
+# Include bot accounts (dependabot, pre-commit-ci, etc. are excluded by default)
+git-credit --bots
+
 # Skip GitHub API lookups (faster, but squash merges are attributed to the merge author
 # only)
 git-credit --no-github
 ```
+
+### Bot filtering
+
+Bot accounts (identified by `[bot]@` in their email address) are excluded from
+the output by default. Use `--bots` to include them. When bots are excluded,
+the summary line shows how many were filtered.
 
 ### GitHub authentication
 
@@ -91,7 +100,7 @@ with a warning.
 │ Bob <bob@example.com>    ┆ 8             ┆ 5   ┆ 876   ┆ 201 ┆ 1,077 │
 ╰──────────────────────────┴───────────────┴─────┴───────┴─────┴───────╯
 
-20 commits walked, 13 squash merges expanded
+2 authors (3 bots excluded), 20 commits walked, 13 squash merges expanded
 ```
 
 ## Development

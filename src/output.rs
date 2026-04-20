@@ -49,8 +49,15 @@ fn render_table(report: &CreditReport) {
     }
 
     println!("{table}");
+
+    let author_count = format_number(report.authors.len() as u64);
+    let bots_info = if report.bots_excluded > 0 {
+        format!(" ({} bots excluded)", format_number(report.bots_excluded))
+    } else {
+        String::new()
+    };
     println!(
-        "\n{} commits walked, {} squash merges expanded",
+        "\n{author_count} authors{bots_info}, {} commits walked, {} squash merges expanded",
         format_number(report.total_commits_walked),
         format_number(report.squash_merges_expanded),
     );
@@ -107,6 +114,7 @@ mod tests {
             }],
             total_commits_walked: 10,
             squash_merges_expanded: 2,
+            bots_excluded: 0,
         };
 
         // Verify it produces valid JSON by round-tripping.
