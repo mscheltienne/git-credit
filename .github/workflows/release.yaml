@@ -1,0 +1,85 @@
+name: Release
+on:  # yamllint disable-line rule:truthy
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: false
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: true
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            cross: false
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            cross: false
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            cross: false
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: taiki-e/install-action@cross
+        if: ${{ matrix.cross }}
+      - name: Build
+        run: |
+          CMD=${{ matrix.cross && 'cross' || 'cargo' }}
+          $CMD build --release --locked --target ${{ matrix.target }}
+      - name: Package (Unix)
+        if: ${{ runner.os != 'Windows' }}
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../git-credit-${{ matrix.target }}.tar.gz git-credit
+          cd ../../..
+      - name: Package (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        run: |
+          cd target/${{ matrix.target }}/release
+          7z a ../../../git-credit-${{ matrix.target }}.zip git-credit.exe
+          cd ../../..
+      - uses: actions/upload-artifact@v4
+        with:
+          name: git-credit-${{ matrix.target }}
+          path: git-credit-${{ matrix.target }}.*
+
+  publish:
+    name: publish
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          tag_name: ${{ github.event.release.tag_name }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish to crates.io
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

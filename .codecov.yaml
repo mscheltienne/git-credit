@@ -1,0 +1,23 @@
+comment: false
+
+github_checks:
+  annotations: false
+
+coverage:
+  status:
+    patch:
+      default:
+        target: 95%
+        informational: true
+    project:
+      library:
+        target: 90%
+        informational: true
+        paths:
+          - "src/"
+
+  round: nearest
+  precision: 2
+
+ignore:
+  - "tests/"

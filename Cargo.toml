@@ -1,0 +1,38 @@
+[package]
+name = "git-credit"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Mathieu Scheltienne <mathieu.scheltienne@gmail.com>"]
+description = "Precise per-author contribution stats that see through squash merges"
+license = "MIT"
+repository = "https://github.com/mscheltienne/git-credit"
+homepage = "https://github.com/mscheltienne/git-credit"
+readme = "README.md"
+keywords = ["git", "contributions", "squash-merge", "attribution", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+color-eyre = "0.6"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Allow specific noisy pedantic lints
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+
+[lints.rust]
+unsafe_code = "deny"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
