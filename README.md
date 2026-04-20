@@ -18,6 +18,7 @@ file exclusion filters.
 ### Homebrew (macOS / Linux)
 
 ```sh
+brew tap mscheltienne/tap
 brew install mscheltienne/tap/git-credit
 ```
 
