@@ -2,9 +2,8 @@
 
 [![CI](https://github.com/mscheltienne/git-credit/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/mscheltienne/git-credit/actions/workflows/ci.yaml)
 [![codecov](https://codecov.io/gh/mscheltienne/git-credit/graph/badge.svg?token=ez0tTYjMnY)](https://codecov.io/gh/mscheltienne/git-credit)
-[![Crates.io](https://img.shields.io/crates/v/git-credit)](https://crates.io/crates/git-credit)
-[![License: MIT](https://img.shields.io/crates/l/git-credit)](LICENSE)
-[![MSRV](https://img.shields.io/crates/msrv/git-credit)](Cargo.toml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue.svg)](Cargo.toml)
 [![pre-commit.ci](https://results.pre-commit.ci/badge/github/mscheltienne/git-credit/main.svg)](https://results.pre-commit.ci/latest/github/mscheltienne/git-credit/main)
 
 > Give credit where it's due -- precise per-author contribution stats that see
