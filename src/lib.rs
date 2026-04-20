@@ -152,13 +152,15 @@ fn fetch_pr_attribution(
         ));
     }
 
-    // Multi-author: fetch per-commit file deltas.
-    let mut author_deltas = Vec::new();
-    for (author, sha) in &pr_commits {
-        let deltas = client.fetch_commit_files(sha)?;
-        author_deltas.push((author.clone(), deltas));
-    }
-    Ok(PrAttribution::MultiAuthor(author_deltas))
+    // Multi-author: fetch per-commit file deltas in parallel.
+    let author_deltas: Result<Vec<_>, error::CreditError> = pr_commits
+        .par_iter()
+        .map(|(author, sha)| {
+            let deltas = client.fetch_commit_files(sha)?;
+            Ok((author.clone(), deltas))
+        })
+        .collect();
+    Ok(PrAttribution::MultiAuthor(author_deltas?))
 }
 
 fn resolve_github_client(cli: &Cli, repo: &git2::Repository) -> Option<Box<dyn GitHubApi>> {
