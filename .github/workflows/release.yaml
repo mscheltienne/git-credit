@@ -59,7 +59,7 @@ jobs:
           cd target/${{ matrix.target }}/release
           7z a ../../../git-credit-${{ matrix.target }}.zip git-credit.exe
           cd ../../..
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: git-credit-${{ matrix.target }}
           path: git-credit-${{ matrix.target }}.*
@@ -70,11 +70,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: artifacts/*
           tag_name: ${{ github.event.release.tag_name }}

@@ -58,15 +58,14 @@ pub fn open_repo(path: &Path) -> Result<Repository, CreditError> {
 /// Resolve an author through a mailmap, falling back to the original
 /// name/email when no mailmap is provided or resolution fails.
 pub fn resolve_author(mailmap: &Option<Mailmap>, name: &str, email: &str) -> Author {
-    if let Some(mm) = mailmap {
-        if let Ok(sig) = git2::Signature::new(name, email, &git2::Time::new(0, 0)) {
-            if let Ok(resolved) = mm.resolve_signature(&sig) {
-                return Author {
-                    name: resolved.name().unwrap_or(name).to_string(),
-                    email: resolved.email().unwrap_or(email).to_string(),
-                };
-            }
-        }
+    if let Some(mm) = mailmap
+        && let Ok(sig) = git2::Signature::new(name, email, &git2::Time::new(0, 0))
+        && let Ok(resolved) = mm.resolve_signature(&sig)
+    {
+        return Author {
+            name: resolved.name().unwrap_or(name).to_string(),
+            email: resolved.email().unwrap_or(email).to_string(),
+        };
     }
     Author {
         name: name.to_string(),
@@ -87,10 +86,10 @@ pub fn walk_commits(
         let oid = oid_result?;
         let commit = repo.find_commit(oid)?;
 
-        if let Some(since) = opts.since {
-            if commit.time().seconds() < since {
-                continue;
-            }
+        if let Some(since) = opts.since
+            && commit.time().seconds() < since
+        {
+            continue;
         }
 
         let sig = commit.author();
