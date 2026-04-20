@@ -15,11 +15,22 @@ file exclusion filters.
 
 ## Installation
 
+### Homebrew (macOS / Linux)
+
+```sh
+brew install mscheltienne/tap/git-credit
+```
+
 ### From crates.io
 
 ```sh
 cargo install git-credit
 ```
+
+### Pre-built binaries
+
+Pre-built binaries for Linux, macOS, and Windows are available on the
+[GitHub Releases](https://github.com/mscheltienne/git-credit/releases) page.
 
 ### From source
 
@@ -28,11 +39,6 @@ git clone https://github.com/mscheltienne/git-credit.git
 cd git-credit
 cargo install --path .
 ```
-
-### Pre-built binaries
-
-Pre-built binaries for Linux, macOS, and Windows are available on the
-[GitHub Releases](https://github.com/mscheltienne/git-credit/releases) page.
 
 ## Usage
 

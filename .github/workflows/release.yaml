@@ -83,3 +83,77 @@ jobs:
         with:
           files: artifacts/*
           tag_name: ${{ github.event.release.tag_name }}
+
+  homebrew:
+    name: homebrew
+    needs: [publish]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Generate formula
+        env:
+          VERSION: ${{ github.event.release.tag_name }}
+        run: |
+          SHA_MACOS_ARM=$(sha256sum artifacts/git-credit-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)
+          SHA_MACOS_INTEL=$(sha256sum artifacts/git-credit-x86_64-apple-darwin.tar.gz | cut -d' ' -f1)
+          SHA_LINUX_ARM=$(sha256sum artifacts/git-credit-aarch64-unknown-linux-musl.tar.gz | cut -d' ' -f1)
+          SHA_LINUX_INTEL=$(sha256sum artifacts/git-credit-x86_64-unknown-linux-musl.tar.gz | cut -d' ' -f1)
+          BASE="https://github.com/mscheltienne/git-credit/releases/download/${VERSION}"
+
+          cat > git-credit.rb << FORMULA
+          class GitCredit < Formula
+            desc "Precise per-author contribution stats that see through squash merges"
+            homepage "https://github.com/mscheltienne/git-credit"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "${BASE}/git-credit-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA_MACOS_ARM}"
+              end
+              on_intel do
+                url "${BASE}/git-credit-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA_MACOS_INTEL}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "${BASE}/git-credit-aarch64-unknown-linux-musl.tar.gz"
+                sha256 "${SHA_LINUX_ARM}"
+              end
+              on_intel do
+                url "${BASE}/git-credit-x86_64-unknown-linux-musl.tar.gz"
+                sha256 "${SHA_LINUX_INTEL}"
+              end
+            end
+
+            def install
+              bin.install "git-credit"
+            end
+
+            test do
+              system bin/"git-credit", "--version"
+            end
+          end
+          FORMULA
+      - uses: actions/checkout@v6
+        with:
+          repository: mscheltienne/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+      - name: Push to homebrew-tap
+        env:
+          VERSION: ${{ github.event.release.tag_name }}
+        run: |
+          cp git-credit.rb tap/Formula/git-credit.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/git-credit.rb
+          git diff --staged --quiet || git commit -m "update git-credit to ${VERSION}"
+          git push
