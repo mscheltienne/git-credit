@@ -2,7 +2,7 @@
 name = "git-credit"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.87"
+rust-version = "1.88"
 authors = ["Mathieu Scheltienne <mathieu.scheltienne@gmail.com>"]
 description = "Precise per-author contribution stats that see through squash merges"
 license = "MIT"
