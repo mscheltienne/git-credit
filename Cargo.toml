@@ -16,7 +16,7 @@ categories = ["command-line-utilities", "development-tools"]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 comfy-table = "7"
-git2 = "0.20"
+git2 = { version = "0.20", default-features = false }
 indicatif = "0.18"
 rayon = "1"
 regex = "1"
