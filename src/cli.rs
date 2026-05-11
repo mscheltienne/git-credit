@@ -37,6 +37,14 @@ pub struct Cli {
     /// Include bot accounts in the output (excluded by default).
     #[arg(long)]
     pub bots: bool,
+
+    /// Use an external `.mailmap` file instead of the repository's own.
+    ///
+    /// When set, the file at PATH replaces (not merges with) the repo's
+    /// in-tree `.mailmap` and any user-global mailmap. Useful when invoking
+    /// git-credit against a clone you don't want to mutate.
+    #[arg(long = "mailmap-file", value_name = "PATH")]
+    pub mailmap_file: Option<PathBuf>,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -58,6 +66,7 @@ mod tests {
         assert!(cli.rev.is_none());
         assert!(!cli.no_github);
         assert!(!cli.bots);
+        assert!(cli.mailmap_file.is_none());
         assert!(matches!(cli.format, OutputFormat::Table));
     }
 
@@ -83,6 +92,8 @@ mod tests {
             "--token",
             "ghp_test",
             "--no-github",
+            "--mailmap-file",
+            "/tmp/.mailmap",
         ])
         .unwrap();
         assert_eq!(cli.repo, PathBuf::from("/tmp/repo"));
@@ -91,5 +102,9 @@ mod tests {
         assert!(matches!(cli.format, OutputFormat::Json));
         assert_eq!(cli.token.as_deref(), Some("ghp_test"));
         assert!(cli.no_github);
+        assert_eq!(
+            cli.mailmap_file.as_deref(),
+            Some(std::path::Path::new("/tmp/.mailmap"))
+        );
     }
 }

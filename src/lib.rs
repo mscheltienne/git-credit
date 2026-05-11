@@ -6,17 +6,21 @@ pub mod github;
 pub mod output;
 pub mod stats;
 
+use std::collections::HashSet;
+use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
+use git2::Mailmap;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
 use cli::Cli;
+use error::CreditError;
 use filter::ExclusionFilter;
-use git::WalkOptions;
+use git::{CommitInfo, WalkOptions, format_utc_iso8601};
 use github::GitHubApi;
-use stats::StatsAccumulator;
+use stats::{Attribution, CommitReport, Report, Summary, compute_squash_attributions, filter_bots};
 
 /// Result of attributing a squash-merge PR to its individual authors.
 enum PrAttribution {
@@ -29,7 +33,7 @@ enum PrAttribution {
 /// Main entry point — orchestrates the full analysis.
 pub fn run(cli: &Cli) -> Result<()> {
     let repo = git::open_repo(&cli.repo).context("could not open git repository")?;
-    let mailmap = repo.mailmap().ok();
+    let mailmap = load_mailmap(cli, &repo)?;
     let filter = ExclusionFilter::new(&cli.excludes).context("invalid exclusion pattern")?;
     let gh_client: Option<Box<dyn GitHubApi>> = resolve_github_client(cli, &repo);
 
@@ -58,20 +62,19 @@ pub fn run(cli: &Cli) -> Result<()> {
         }
     }
 
-    let total = (regular.len() + squash_merges.len()) as u64;
-    let spinner = ProgressBar::new(total);
+    let total = regular.len() + squash_merges.len();
+    let spinner = ProgressBar::new(total as u64);
     spinner.set_style(
         ProgressStyle::with_template("{spinner:.green} [{bar:40}] {pos}/{len} commits")
             .expect("valid template")
             .progress_chars("=> "),
     );
 
-    let mut acc = StatsAccumulator::default();
+    let mut emitted: Vec<CommitReport> = Vec::with_capacity(total);
+    let mut squash_merges_expanded: u64 = 0;
 
     for commit in regular {
-        acc.record_commit();
-        let deltas = filter.filter_deltas(commit.deltas);
-        acc.attribute(&commit.author, &deltas);
+        emitted.push(direct_commit_report(&filter, commit));
         spinner.inc(1);
     }
 
@@ -82,36 +85,107 @@ pub fn run(cli: &Cli) -> Result<()> {
             &filter,
             mailmap.as_ref(),
             &spinner,
-            &mut acc,
+            &mut emitted,
+            &mut squash_merges_expanded,
         );
     } else {
+        // No GitHub client → attribute every squash merge to the merge author.
         for (commit, _) in squash_merges {
-            acc.record_commit();
-            let deltas = filter.filter_deltas(commit.deltas);
-            acc.attribute(&commit.author, &deltas);
+            emitted.push(direct_commit_report(&filter, commit));
             spinner.inc(1);
         }
     }
 
     spinner.finish_and_clear();
 
-    let mut report = acc.finalize();
+    let total_commits_walked = emitted.len() as u64;
+
+    // Bot filtering — strip per-attribution; drop the whole commit if all
+    // attributions are bots. Track the *unique* set of bot emails seen.
+    let mut bot_emails: HashSet<String> = HashSet::new();
     if !cli.bots {
-        let total = report.authors.len();
-        report.authors.retain(|a| !git::is_bot_email(&a.email));
-        report.bots_excluded = (total - report.authors.len()) as u64;
+        let mut kept = Vec::with_capacity(emitted.len());
+        for commit in emitted {
+            for a in &commit.attributions {
+                if git::is_bot_email(&a.email) {
+                    bot_emails.insert(a.email.clone());
+                }
+            }
+            if let Some(commit) = filter_bots(commit) {
+                kept.push(commit);
+            }
+        }
+        emitted = kept;
     }
+
+    // Stable order: by author_date ascending, sha as a tie-breaker.
+    emitted.sort_by(|a, b| {
+        a.author_date
+            .cmp(&b.author_date)
+            .then_with(|| a.sha.cmp(&b.sha))
+    });
+
+    let report = Report {
+        commits: emitted,
+        summary: Summary {
+            total_commits_walked,
+            squash_merges_expanded,
+            bots_excluded: bot_emails.len() as u64,
+        },
+    };
+
     output::render(&report, &cli.format)?;
     Ok(())
 }
 
+/// Load the mailmap from disk: prefer `--mailmap-file <PATH>` if set,
+/// else fall back to `repo.mailmap()` (worktree `.mailmap` → `HEAD:.mailmap`
+/// → `mailmap.file` config).
+fn load_mailmap(cli: &Cli, repo: &git2::Repository) -> Result<Option<Mailmap>, CreditError> {
+    if let Some(path) = &cli.mailmap_file {
+        let path_str = path.display().to_string();
+        let content = fs::read_to_string(path).map_err(|source| CreditError::MailmapRead {
+            path: path_str.clone(),
+            source,
+        })?;
+        let mailmap =
+            Mailmap::from_buffer(&content).map_err(|source| CreditError::MailmapParse {
+                path: path_str,
+                source,
+            })?;
+        return Ok(Some(mailmap));
+    }
+    Ok(repo.mailmap().ok())
+}
+
+/// Build a [`CommitReport`] for a direct commit (no squash-merge expansion).
+fn direct_commit_report(filter: &ExclusionFilter, commit: CommitInfo) -> CommitReport {
+    let deltas = filter.filter_deltas(commit.deltas);
+    let additions: u64 = deltas.iter().map(|d| d.additions).sum();
+    let deletions: u64 = deltas.iter().map(|d| d.deletions).sum();
+    CommitReport {
+        sha: commit.oid.to_string(),
+        author_date: format_utc_iso8601(commit.author_time),
+        is_squash_pr: false,
+        attributions: vec![Attribution {
+            name: commit.author.name,
+            email: commit.author.email,
+            additions,
+            deletions,
+            is_pr_author: false,
+        }],
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn process_squash_merges(
     client: &dyn GitHubApi,
     squash_merges: Vec<(git::CommitInfo, u64)>,
     filter: &ExclusionFilter,
     mailmap: Option<&git2::Mailmap>,
     spinner: &ProgressBar,
-    acc: &mut StatsAccumulator,
+    emitted: &mut Vec<CommitReport>,
+    squash_merges_expanded: &mut u64,
 ) {
     let rate_limit_flag = AtomicBool::new(false);
     let pr_results: Vec<_> = squash_merges
@@ -137,34 +211,64 @@ fn process_squash_merges(
     let mut api_errors: u64 = 0;
     let mut rate_limited = false;
     for ((commit, pr_number), result) in squash_merges.into_iter().zip(pr_results) {
-        acc.record_commit();
-        let deltas = filter.filter_deltas(commit.deltas);
+        let sha = commit.oid.to_string();
+        let author_date = format_utc_iso8601(commit.author_time);
+        let deltas = filter.filter_deltas(commit.deltas.clone());
+
         match result {
             Ok(PrAttribution::SingleAuthor(author)) => {
                 let resolved = git::resolve_author(mailmap, &author.name, &author.email);
-                acc.attribute(&resolved, &deltas);
-                acc.mark_pr(&resolved);
-                acc.record_squash_expansion();
+                let additions: u64 = deltas.iter().map(|d| d.additions).sum();
+                let deletions: u64 = deltas.iter().map(|d| d.deletions).sum();
+                emitted.push(CommitReport {
+                    sha,
+                    author_date,
+                    is_squash_pr: true,
+                    attributions: vec![Attribution {
+                        name: resolved.name,
+                        email: resolved.email,
+                        additions,
+                        deletions,
+                        is_pr_author: true,
+                    }],
+                });
+                *squash_merges_expanded += 1;
             }
             Ok(PrAttribution::MultiAuthor(pr_author_deltas)) => {
                 let resolved: Vec<_> = pr_author_deltas
                     .into_iter()
                     .map(|(a, d)| (git::resolve_author(mailmap, &a.name, &a.email), d))
                     .collect();
-                acc.attribute_squash_merge(&resolved, &deltas);
-                acc.record_squash_expansion();
+                let attributions = compute_squash_attributions(&resolved, &deltas);
+                emitted.push(CommitReport {
+                    sha,
+                    author_date,
+                    is_squash_pr: true,
+                    attributions,
+                });
+                *squash_merges_expanded += 1;
             }
             Err(error::CreditError::GitHubApi { status: 403, .. }) => {
                 rate_limited = true;
                 api_errors += 1;
-                acc.attribute(&commit.author, &deltas);
+                emitted.push(fallback_commit_report(
+                    sha,
+                    author_date,
+                    &commit.author,
+                    &deltas,
+                ));
             }
             Err(e) => {
                 if api_errors == 0 {
                     eprintln!("warning: GitHub API error for PR #{pr_number}: {e}");
                 }
                 api_errors += 1;
-                acc.attribute(&commit.author, &deltas);
+                emitted.push(fallback_commit_report(
+                    sha,
+                    author_date,
+                    &commit.author,
+                    &deltas,
+                ));
             }
         }
     }
@@ -178,6 +282,30 @@ fn process_squash_merges(
             "warning: {api_errors} GitHub API errors, \
              PRs fell back to commit-author attribution"
         );
+    }
+}
+
+/// Build a [`CommitReport`] for a squash-merge whose GitHub re-attribution
+/// failed — attribute everything to the merge commit's own author.
+fn fallback_commit_report(
+    sha: String,
+    author_date: String,
+    author: &git::Author,
+    deltas: &[git::FileDelta],
+) -> CommitReport {
+    let additions: u64 = deltas.iter().map(|d| d.additions).sum();
+    let deletions: u64 = deltas.iter().map(|d| d.deletions).sum();
+    CommitReport {
+        sha,
+        author_date,
+        is_squash_pr: false,
+        attributions: vec![Attribution {
+            name: author.name.clone(),
+            email: author.email.clone(),
+            additions,
+            deletions,
+            is_pr_author: false,
+        }],
     }
 }
 

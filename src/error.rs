@@ -26,6 +26,15 @@ pub enum CreditError {
     #[error("invalid glob pattern '{pattern}': {reason}")]
     InvalidGlob { pattern: String, reason: String },
 
+    #[error("could not read mailmap file '{path}'")]
+    MailmapRead {
+        path: String,
+        source: std::io::Error,
+    },
+
+    #[error("invalid mailmap file '{path}'")]
+    MailmapParse { path: String, source: git2::Error },
+
     #[error(transparent)]
     Serialize(#[from] serde_json::Error),
 }

@@ -65,10 +65,23 @@ git-credit --format json
 # Include bot accounts (dependabot, pre-commit-ci, etc. are excluded by default)
 git-credit --bots
 
+# Use an external .mailmap (overrides any .mailmap inside the repository)
+git-credit --mailmap-file /path/to/.mailmap
+
 # Skip GitHub API lookups (faster, but squash merges are attributed to the merge author
 # only)
 git-credit --no-github
 ```
+
+### Mailmap
+
+By default git-credit applies the repository's `.mailmap` (or the file
+referenced by `mailmap.file` in git config) to canonicalize author identities.
+Pass `--mailmap-file <PATH>` to use an external file instead — useful when
+invoking git-credit against a clone you don't want to mutate, or when
+aggregating mailmap entries across many repositories outside git-credit.
+
+The external mailmap **replaces** the repo's own; the two are not merged.
 
 ### Bot filtering
 
@@ -89,7 +102,7 @@ GitHub token. It resolves the token in this order:
 If no token is found, git-credit runs in `--no-github` mode automatically
 with a warning.
 
-### Example output
+### Example table output
 
 ```text
 ╭──────────────────────────┬───────────────┬─────┬───────┬─────┬───────╮
@@ -101,6 +114,60 @@ with a warning.
 ╰──────────────────────────┴───────────────┴─────┴───────┴─────┴───────╯
 
 2 authors (3 bots excluded), 20 commits walked, 13 squash merges expanded
+```
+
+### JSON output
+
+`--format json` emits one record per processed commit. For squash-merge PRs
+`attributions` carries one entry per re-attributed author; for regular commits
+the array has a single entry. `commits[]` is sorted by `author_date` ascending,
+with `sha` as a tie-breaker.
+
+```json
+{
+  "commits": [
+    {
+      "sha": "abc1234567890abcdef1234567890abcdef12345",
+      "author_date": "2026-04-17T14:23:51Z",
+      "is_squash_pr": false,
+      "attributions": [
+        {
+          "name": "Alice Smith",
+          "email": "alice@example.com",
+          "additions": 42,
+          "deletions": 7,
+          "is_pr_author": false
+        }
+      ]
+    },
+    {
+      "sha": "def987...",
+      "author_date": "2026-04-18T09:12:00Z",
+      "is_squash_pr": true,
+      "attributions": [
+        {
+          "name": "Alice Smith",
+          "email": "alice@example.com",
+          "additions": 75,
+          "deletions": 12,
+          "is_pr_author": true
+        },
+        {
+          "name": "Bob Jones",
+          "email": "bob@example.com",
+          "additions": 25,
+          "deletions": 4,
+          "is_pr_author": true
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_commits_walked": 2,
+    "squash_merges_expanded": 1,
+    "bots_excluded": 0
+  }
+}
 ```
 
 ## Development

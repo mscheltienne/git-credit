@@ -42,6 +42,9 @@ pub struct FileDelta {
 pub struct CommitInfo {
     pub oid: git2::Oid,
     pub author: Author,
+    /// Author time in epoch seconds (UTC), from `commit.author().when()`.
+    /// Distinct from committer time — matches what `git log --format='%aI'` shows.
+    pub author_time: i64,
     pub message: String,
     pub parent_count: usize,
     pub deltas: Vec<FileDelta>,
@@ -96,13 +99,15 @@ pub fn walk_commits(
         let oid = oid_result?;
         let commit = repo.find_commit(oid)?;
 
+        let sig = commit.author();
+        let author_time = sig.when().seconds();
+
         if let Some(since) = opts.since
-            && commit.time().seconds() < since
+            && author_time < since
         {
             continue;
         }
 
-        let sig = commit.author();
         let author = resolve_author(
             mailmap,
             sig.name().unwrap_or("Unknown"),
@@ -115,6 +120,7 @@ pub fn walk_commits(
         commits.push(CommitInfo {
             oid,
             author,
+            author_time,
             message,
             parent_count,
             deltas,
@@ -243,6 +249,38 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
+/// Convert days since the Unix epoch (1970-01-01) back to a civil date.
+/// Inverse of [`days_from_civil`]; same Howard Hinnant algorithm.
+///
+/// Returned `(year, month, day)` with `month ∈ 1..=12` and `day ∈ 1..=31`.
+#[allow(clippy::similar_names)]
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let yr = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let mp = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { yr + 1 } else { yr };
+    (year, month, day)
+}
+
+/// Format an epoch-seconds (UTC) value as an ISO 8601 string with `Z` suffix
+/// and second precision: `YYYY-MM-DDTHH:MM:SSZ`.
+pub fn format_utc_iso8601(epoch: i64) -> String {
+    let days = epoch.div_euclid(86_400);
+    let seconds_of_day = epoch.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let hour = seconds_of_day / 3600;
+    let minute = (seconds_of_day % 3600) / 60;
+    let second = seconds_of_day % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -286,6 +324,7 @@ mod tests {
                 name: "Test".into(),
                 email: "test@test.com".into(),
             },
+            author_time: 0,
             message: message.into(),
             parent_count,
             deltas: vec![],
@@ -453,5 +492,40 @@ mod tests {
         let author = resolve_author(None, "Alice", "alice@example.com");
         assert_eq!(author.name, "Alice");
         assert_eq!(author.email, "alice@example.com");
+    }
+
+    #[test]
+    fn format_utc_iso8601_epoch() {
+        assert_eq!(format_utc_iso8601(0), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn format_utc_iso8601_round_numbers() {
+        // 2025-01-01 00:00:00 UTC = 1735689600 (matches parse_date_valid above).
+        assert_eq!(format_utc_iso8601(1_735_689_600), "2025-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn format_utc_iso8601_end_of_day() {
+        assert_eq!(format_utc_iso8601(1_735_775_999), "2025-01-01T23:59:59Z");
+    }
+
+    #[test]
+    fn format_utc_iso8601_leap_day() {
+        // 2020-02-29 00:00:00 UTC = 1582934400.
+        assert_eq!(format_utc_iso8601(1_582_934_400), "2020-02-29T00:00:00Z");
+    }
+
+    #[test]
+    fn format_utc_iso8601_pre_epoch() {
+        // 1969-12-31 00:00:00 UTC = -86400.
+        assert_eq!(format_utc_iso8601(-86_400), "1969-12-31T00:00:00Z");
+    }
+
+    #[test]
+    fn format_utc_iso8601_mid_day() {
+        // 2026-04-17 14:23:51 UTC.
+        let epoch = days_from_civil(2026, 4, 17) * 86_400 + 14 * 3600 + 23 * 60 + 51;
+        assert_eq!(format_utc_iso8601(epoch), "2026-04-17T14:23:51Z");
     }
 }
