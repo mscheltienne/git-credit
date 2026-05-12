@@ -119,6 +119,7 @@ mod tests {
                     deletions: 50,
                     is_pr_author: false,
                 }],
+                accurate: true,
             }],
             summary: Summary {
                 total_commits_walked: 10,

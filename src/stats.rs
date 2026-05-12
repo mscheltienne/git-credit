@@ -14,13 +14,19 @@ use crate::git::{Author, FileDelta, is_bot_email};
 /// For successfully-expanded squash-merge PRs it has one entry per
 /// re-attributed author, each marked `is_pr_author: true`.
 /// For failed squash-merge expansion (no token / API error) it falls back
-/// to a single entry with `is_squash_pr: false`.
+/// to a single entry with `is_squash_pr: false` and `accurate: false`.
+///
+/// `accurate` is `true` for normally-processed commits. It is `false` when
+/// the squash-merge PR could not be expanded (rate limit, API error,
+/// missing token) and the row is a fallback attribution to the merge
+/// committer. Consumers use this flag to decide whether to retry later.
 #[derive(Debug, Clone, Serialize)]
 pub struct CommitReport {
     pub sha: String,
     pub author_date: String,
     pub is_squash_pr: bool,
     pub attributions: Vec<Attribution>,
+    pub accurate: bool,
 }
 
 /// One author's share of a commit's line changes.
@@ -215,6 +221,7 @@ mod tests {
             author_date: "2025-01-01T00:00:00Z".into(),
             is_squash_pr: false,
             attributions,
+            accurate: true,
         }
     }
 

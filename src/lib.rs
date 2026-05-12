@@ -174,6 +174,7 @@ fn direct_commit_report(filter: &ExclusionFilter, commit: CommitInfo) -> CommitR
             deletions,
             is_pr_author: false,
         }],
+        accurate: true,
     }
 }
 
@@ -231,6 +232,7 @@ fn process_squash_merges(
                         deletions,
                         is_pr_author: true,
                     }],
+                    accurate: true,
                 });
                 *squash_merges_expanded += 1;
             }
@@ -245,6 +247,7 @@ fn process_squash_merges(
                     author_date,
                     is_squash_pr: true,
                     attributions,
+                    accurate: true,
                 });
                 *squash_merges_expanded += 1;
             }
@@ -286,7 +289,9 @@ fn process_squash_merges(
 }
 
 /// Build a [`CommitReport`] for a squash-merge whose GitHub re-attribution
-/// failed — attribute everything to the merge commit's own author.
+/// failed — attribute everything to the merge commit's own author. The
+/// `accurate: false` flag tells consumers this row is a fallback that
+/// should be retried once the API is available again.
 fn fallback_commit_report(
     sha: String,
     author_date: String,
@@ -306,6 +311,7 @@ fn fallback_commit_report(
             deletions,
             is_pr_author: false,
         }],
+        accurate: false,
     }
 }
 
