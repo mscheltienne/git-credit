@@ -123,6 +123,13 @@ with a warning.
 the array has a single entry. `commits[]` is sorted by `author_date` ascending,
 with `sha` as a tie-breaker.
 
+Each commit also carries an `accurate` flag. It is `true` for normally-processed
+commits (regular commits and successfully-expanded squash-merge PRs) and `false`
+when a squash-merge could not be expanded — e.g. the GitHub API rate-limited
+the run, returned an error, or no token was available — and the commit fell
+back to merge-author attribution. Consumers can use this flag to retry later
+when the API recovers.
+
 ```json
 {
   "commits": [
@@ -138,7 +145,8 @@ with `sha` as a tie-breaker.
           "deletions": 7,
           "is_pr_author": false
         }
-      ]
+      ],
+      "accurate": true
     },
     {
       "sha": "def987...",
@@ -159,16 +167,37 @@ with `sha` as a tie-breaker.
           "deletions": 4,
           "is_pr_author": true
         }
-      ]
+      ],
+      "accurate": true
+    },
+    {
+      "sha": "fed321...",
+      "author_date": "2026-04-19T16:05:22Z",
+      "is_squash_pr": false,
+      "attributions": [
+        {
+          "name": "Alice Smith",
+          "email": "alice@example.com",
+          "additions": 50,
+          "deletions": 10,
+          "is_pr_author": false
+        }
+      ],
+      "accurate": false
     }
   ],
   "summary": {
-    "total_commits_walked": 2,
+    "total_commits_walked": 3,
     "squash_merges_expanded": 1,
     "bots_excluded": 0
   }
 }
 ```
+
+In the example above, the third commit was a squash-merge whose PR expansion
+failed (rate limit, API error, or missing token); git-credit emits it with
+`is_squash_pr: false`, the merge committer as the sole attribution, and
+`accurate: false` so the caller knows to retry.
 
 ## Development
 
