@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::LazyLock;
 
-use git2::{DiffOptions, Mailmap, Repository, Revwalk, Sort};
+use git2::{DiffFindOptions, DiffOptions, Mailmap, Repository, Revwalk, Sort};
 use regex::Regex;
 
 use crate::error::CreditError;
@@ -144,7 +144,16 @@ pub fn diff_commit(
     };
 
     let mut opts = DiffOptions::new();
-    let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
+    let mut diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
+
+    // Collapse delete+add pairs that look like a rename (≥50% similar, libgit2
+    // default) into a single rename-delta with the in-place line stats. Without
+    // this, a `git mv` shows up as `−N + N` for every renamed file's full
+    // content, dwarfing the actual line edits in the commit. Matches the
+    // behavior of `git diff -M`, which is git CLI's default.
+    let mut find_opts = DiffFindOptions::new();
+    find_opts.renames(true);
+    diff.find_similar(Some(&mut find_opts))?;
 
     let mut deltas = Vec::new();
 
@@ -418,6 +427,104 @@ mod tests {
         assert_eq!(deltas.len(), 1);
         assert_eq!(deltas[0].path, "file.txt");
         assert_eq!(deltas[0].additions, 1);
+        assert_eq!(deltas[0].deletions, 0);
+    }
+
+    /// A pure rename (identical content, just a different path) must not
+    /// double-count the file content as `−N + N`. `find_similar` collapses
+    /// the delete+add pair into a single rename delta with 0 additions and
+    /// 0 deletions, matching `git diff -M`.
+    #[test]
+    fn diff_commit_pure_rename_has_zero_line_stats() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        let sig = git2::Signature::now("Test Author", "test@example.com").unwrap();
+
+        // ~600 bytes of identical content in both commits — well above the
+        // libgit2 default similarity floor, so this is unambiguously a rename.
+        let content: Vec<u8> = (0..30)
+            .flat_map(|i| format!("line {i}\n").into_bytes())
+            .collect();
+        let blob = repo.blob(&content).unwrap();
+
+        let mut tb1 = repo.treebuilder(None).unwrap();
+        tb1.insert("old.txt", blob, 0o100_644).unwrap();
+        let tree1 = repo.find_tree(tb1.write().unwrap()).unwrap();
+        let c1 = repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree1, &[])
+            .unwrap();
+
+        let mut tb2 = repo.treebuilder(None).unwrap();
+        tb2.insert("new.txt", blob, 0o100_644).unwrap();
+        let tree2 = repo.find_tree(tb2.write().unwrap()).unwrap();
+        let c1_commit = repo.find_commit(c1).unwrap();
+        let c2 = repo
+            .commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                "rename file",
+                &tree2,
+                &[&c1_commit],
+            )
+            .unwrap();
+
+        let deltas = diff_commit(&repo, &repo.find_commit(c2).unwrap()).unwrap();
+
+        // A delta with both additions == 0 and deletions == 0 is dropped by
+        // `diff_commit` (the `if adds > 0 || dels > 0` guard), so the pure
+        // rename produces zero deltas — the strongest possible assertion that
+        // we are not counting the file content as churn.
+        assert!(
+            deltas.is_empty(),
+            "pure rename emitted deltas: {deltas:?} — find_similar didn't collapse them"
+        );
+    }
+
+    /// A rename combined with an in-place edit reports only the edit's line
+    /// stats, attributed to the new path. Without `find_similar` this would
+    /// be `−full_old_size + full_new_size`, drastically inflating the totals.
+    #[test]
+    fn diff_commit_rename_with_edit_reports_in_place_stats() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        let sig = git2::Signature::now("Test Author", "test@example.com").unwrap();
+
+        let original: Vec<u8> = (0..30)
+            .flat_map(|i| format!("line {i}\n").into_bytes())
+            .collect();
+        let blob_old = repo.blob(&original).unwrap();
+        let mut tb1 = repo.treebuilder(None).unwrap();
+        tb1.insert("old.txt", blob_old, 0o100_644).unwrap();
+        let tree1 = repo.find_tree(tb1.write().unwrap()).unwrap();
+        let c1 = repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree1, &[])
+            .unwrap();
+
+        // Append two lines at the new path — 2 additions, 0 deletions.
+        let mut edited = original.clone();
+        edited.extend_from_slice(b"new-line-a\nnew-line-b\n");
+        let blob_new = repo.blob(&edited).unwrap();
+        let mut tb2 = repo.treebuilder(None).unwrap();
+        tb2.insert("new.txt", blob_new, 0o100_644).unwrap();
+        let tree2 = repo.find_tree(tb2.write().unwrap()).unwrap();
+        let c1_commit = repo.find_commit(c1).unwrap();
+        let c2 = repo
+            .commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                "rename + append",
+                &tree2,
+                &[&c1_commit],
+            )
+            .unwrap();
+
+        let deltas = diff_commit(&repo, &repo.find_commit(c2).unwrap()).unwrap();
+
+        assert_eq!(deltas.len(), 1, "expected single rename delta");
+        assert_eq!(deltas[0].path, "new.txt", "attribution goes to new path");
+        assert_eq!(deltas[0].additions, 2);
         assert_eq!(deltas[0].deletions, 0);
     }
 
