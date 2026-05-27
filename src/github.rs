@@ -219,7 +219,10 @@ pub fn extract_slug(repo: &git2::Repository) -> Result<RepoSlug, CreditError> {
     let remote = repo
         .find_remote("origin")
         .map_err(|_| CreditError::NoGitHubRemote)?;
-    let url = remote.url().ok_or(CreditError::NoGitHubRemote)?;
+    // `Remote::url()` returns `Result<&str, git2::Error>` since git2 0.21
+    // (non-UTF-8 URLs surface as `Err`); previously it was `Option<&str>`.
+    // Either failure mode collapses to `NoGitHubRemote` for our purposes.
+    let url = remote.url().map_err(|_| CreditError::NoGitHubRemote)?;
     parse_github_url(url).ok_or(CreditError::NoGitHubRemote)
 }
 

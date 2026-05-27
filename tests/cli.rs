@@ -279,6 +279,67 @@ fn mailmap_file_missing_errors() {
         .stderr(predicate::str::contains("could not read mailmap file"));
 }
 
+// ---------------------------------------------------------------------------
+// --no-mailmap
+// ---------------------------------------------------------------------------
+
+#[test]
+fn no_mailmap_bypasses_in_repo_mailmap() {
+    let dir = tempfile::tempdir().unwrap();
+    create_repo_with_unmapped_alice(dir.path());
+
+    // In-repo mailmap that would rewrite the author when honored. `--no-mailmap`
+    // must skip it.
+    fs::write(
+        dir.path().join(".mailmap"),
+        "Alice Smith <alice@example.com> <alice-old@example.com>\n",
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("git-credit")
+        .unwrap()
+        .args([
+            "--repo",
+            dir.path().to_str().unwrap(),
+            "--no-github",
+            "--no-mailmap",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git-credit failed: {output:?}");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let attribution = &json["commits"][0]["attributions"][0];
+    // Raw author survives because the in-repo .mailmap is not consulted.
+    assert_eq!(attribution["email"], "alice-old@example.com");
+    assert_eq!(attribution["name"], "Alice Old");
+}
+
+#[test]
+fn no_mailmap_conflicts_with_mailmap_file() {
+    let dir = tempfile::tempdir().unwrap();
+    create_test_repo(dir.path());
+
+    let external_dir = tempfile::tempdir().unwrap();
+    let external_path = external_dir.path().join(".mailmap");
+    fs::write(&external_path, "").unwrap();
+
+    Command::cargo_bin("git-credit")
+        .unwrap()
+        .args([
+            "--repo",
+            dir.path().to_str().unwrap(),
+            "--no-github",
+            "--no-mailmap",
+            "--mailmap-file",
+            external_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
 #[test]
 fn mailmap_file_invalid_errors() {
     let dir = tempfile::tempdir().unwrap();

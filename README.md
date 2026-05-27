@@ -68,6 +68,9 @@ git-credit --bots
 # Use an external .mailmap (overrides any .mailmap inside the repository)
 git-credit --mailmap-file /path/to/.mailmap
 
+# Skip mailmap resolution entirely — emit raw commit.author() identities
+git-credit --no-mailmap
+
 # Skip GitHub API lookups (faster, but squash merges are attributed to the merge author
 # only)
 git-credit --no-github
@@ -82,6 +85,12 @@ invoking git-credit against a clone you don't want to mutate, or when
 aggregating mailmap entries across many repositories outside git-credit.
 
 The external mailmap **replaces** the repo's own; the two are not merged.
+
+Pass `--no-mailmap` to skip mailmap resolution entirely — the JSON output
+then carries raw `commit.author()` identities verbatim. Useful when the
+consumer wants to apply mailmap canonicalization at read time rather than
+baking it into the emitted data. `--no-mailmap` and `--mailmap-file` are
+mutually exclusive.
 
 ### Bot filtering
 

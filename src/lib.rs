@@ -140,8 +140,13 @@ pub fn run(cli: &Cli) -> Result<()> {
 
 /// Load the mailmap from disk: prefer `--mailmap-file <PATH>` if set,
 /// else fall back to `repo.mailmap()` (worktree `.mailmap` → `HEAD:.mailmap`
-/// → `mailmap.file` config).
+/// → `mailmap.file` config). Returns `Ok(None)` when `--no-mailmap` is set,
+/// short-circuiting both paths so the output carries raw `commit.author()`
+/// identities.
 fn load_mailmap(cli: &Cli, repo: &git2::Repository) -> Result<Option<Mailmap>, CreditError> {
+    if cli.no_mailmap {
+        return Ok(None);
+    }
     if let Some(path) = &cli.mailmap_file {
         let path_str = path.display().to_string();
         let content = fs::read_to_string(path).map_err(|source| CreditError::MailmapRead {
