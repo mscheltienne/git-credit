@@ -45,6 +45,15 @@ pub struct Cli {
     /// git-credit against a clone you don't want to mutate.
     #[arg(long = "mailmap-file", value_name = "PATH")]
     pub mailmap_file: Option<PathBuf>,
+
+    /// Skip all mailmap resolution and emit raw `commit.author()` identities.
+    ///
+    /// Bypasses both the repository's in-tree `.mailmap` (and the
+    /// `mailmap.file` git config) and any `--mailmap-file` argument — the
+    /// two flags are mutually exclusive. Useful when the consumer wants to
+    /// apply mailmap canonicalization at read time over the raw data.
+    #[arg(long = "no-mailmap", conflicts_with = "mailmap_file")]
+    pub no_mailmap: bool,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -67,7 +76,27 @@ mod tests {
         assert!(!cli.no_github);
         assert!(!cli.bots);
         assert!(cli.mailmap_file.is_none());
+        assert!(!cli.no_mailmap);
         assert!(matches!(cli.format, OutputFormat::Table));
+    }
+
+    #[test]
+    fn no_mailmap_flag_parses() {
+        let cli = Cli::try_parse_from(["git-credit", "--no-mailmap"]).unwrap();
+        assert!(cli.no_mailmap);
+    }
+
+    #[test]
+    fn no_mailmap_conflicts_with_mailmap_file() {
+        let err = Cli::try_parse_from([
+            "git-credit",
+            "--no-mailmap",
+            "--mailmap-file",
+            "/tmp/.mailmap",
+        ])
+        .unwrap_err();
+        // Clap labels mutually-exclusive arg errors as `ArgumentConflict`.
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]

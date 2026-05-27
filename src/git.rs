@@ -328,7 +328,7 @@ mod tests {
 
     fn make_commit(message: &str, parent_count: usize) -> CommitInfo {
         CommitInfo {
-            oid: git2::Oid::zero(),
+            oid: git2::Oid::ZERO_SHA1,
             author: Author {
                 name: "Test".into(),
                 email: "test@test.com".into(),
