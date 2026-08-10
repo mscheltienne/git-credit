@@ -15,7 +15,7 @@ categories = ["command-line-utilities", "development-tools"]
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-comfy-table = "7"
+comfy-table = "8"
 git2 = { version = "0.21", default-features = false }
 indicatif = "0.18"
 rayon = "1"
