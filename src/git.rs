@@ -1,10 +1,11 @@
 use std::path::Path;
 use std::sync::LazyLock;
 
-use git2::{DiffFindOptions, DiffOptions, Mailmap, Repository, Revwalk, Sort};
+use git2::{DiffFindOptions, DiffOptions, Mailmap, Repository, Sort};
 use regex::Regex;
 
 use crate::error::CreditError;
+use crate::filter::ExclusionFilter;
 
 static PR_NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\(#(\d+)\)").unwrap());
 
@@ -31,23 +32,18 @@ pub struct FileDelta {
     pub deletions: u64,
 }
 
-/// A processed commit with its diff stats.
+/// A walked commit with its line totals over the non-excluded files.
 #[derive(Debug)]
 pub struct CommitInfo {
     pub oid: git2::Oid,
     pub author: Author,
-    /// Author time in epoch seconds (UTC), from `commit.author().when()`.
-    /// Distinct from committer time — matches what `git log --format='%aI'` shows.
+    /// Author time in epoch seconds (UTC), as `git log --format='%aI'` shows it.
     pub author_time: i64,
-    pub message: String,
-    pub parent_count: usize,
-    pub deltas: Vec<FileDelta>,
-}
-
-/// Options controlling the commit walk.
-pub struct WalkOptions {
-    pub rev_range: Option<String>,
-    pub since: Option<i64>,
+    /// PR number of a squash-merge candidate: a single-parent commit whose first
+    /// line contains `(#N)`.
+    pub pr_number: Option<u64>,
+    pub additions: u64,
+    pub deletions: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -80,47 +76,56 @@ pub fn resolve_author(mailmap: Option<&Mailmap>, name: &str, email: &str) -> Aut
     }
 }
 
-/// Walk commits according to the given options, computing diffs for each.
+/// Walk `rev_range` (or `HEAD`), skipping commits authored before `since`, and diff
+/// each commit against its first parent.
 pub fn walk_commits(
     repo: &Repository,
-    opts: &WalkOptions,
+    rev_range: Option<&str>,
+    since: Option<i64>,
     mailmap: Option<&Mailmap>,
+    filter: &ExclusionFilter,
 ) -> Result<Vec<CommitInfo>, CreditError> {
-    let mut revwalk = setup_revwalk(repo, opts)?;
+    let mut revwalk = repo.revwalk()?;
+    revwalk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)?;
+    if let Some(range) = rev_range {
+        revwalk
+            .push_range(range)
+            .map_err(|source| CreditError::InvalidRevRange {
+                range: range.to_string(),
+                source,
+            })?;
+    } else {
+        revwalk.push_head()?;
+    }
+
     let mut commits = Vec::new();
-
-    for oid_result in &mut revwalk {
-        let oid = oid_result?;
-        let commit = repo.find_commit(oid)?;
-
+    for oid in revwalk {
+        let commit = repo.find_commit(oid?)?;
         let sig = commit.author();
         let author_time = sig.when().seconds();
-
-        if let Some(since) = opts.since
-            && author_time < since
-        {
+        if since.is_some_and(|since| author_time < since) {
             continue;
         }
 
-        let author = resolve_author(
-            mailmap,
-            sig.name().unwrap_or("Unknown"),
-            sig.email().unwrap_or("unknown"),
-        );
-        let message = commit.message().unwrap_or("").to_string();
-        let parent_count = commit.parent_count();
-        let deltas = diff_commit(repo, &commit)?;
-
+        let pr_number = if commit.parent_count() == 1 {
+            extract_pr_number(commit.message().unwrap_or(""))
+        } else {
+            None
+        };
+        let (additions, deletions) = filter.line_totals(&diff_commit(repo, &commit)?);
         commits.push(CommitInfo {
-            oid,
-            author,
+            oid: commit.id(),
+            author: resolve_author(
+                mailmap,
+                sig.name().unwrap_or("Unknown"),
+                sig.email().unwrap_or("unknown"),
+            ),
             author_time,
-            message,
-            parent_count,
-            deltas,
+            pr_number,
+            additions,
+            deletions,
         });
     }
-
     Ok(commits)
 }
 
@@ -185,17 +190,6 @@ pub fn extract_pr_number(message: &str) -> Option<u64> {
         .and_then(|cap| cap[1].parse().ok())
 }
 
-/// Determine if a commit is a squash-merge candidate.
-/// Returns the PR number if the commit has exactly one parent and contains
-/// a `(#NNN)` reference in its message.
-pub fn is_squash_merge(commit: &CommitInfo) -> Option<u64> {
-    if commit.parent_count == 1 {
-        extract_pr_number(&commit.message)
-    } else {
-        None
-    }
-}
-
 /// Parse a `YYYY-MM-DD` date string into seconds since the Unix epoch
 /// (midnight UTC).
 pub fn parse_date_to_epoch(date_str: &str) -> Result<i64, CreditError> {
@@ -221,24 +215,6 @@ fn parse_date_inner(date_str: &str) -> Option<i64> {
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
-
-fn setup_revwalk<'a>(repo: &'a Repository, opts: &WalkOptions) -> Result<Revwalk<'a>, CreditError> {
-    let mut revwalk = repo.revwalk()?;
-    revwalk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)?;
-
-    if let Some(ref range) = opts.rev_range {
-        revwalk
-            .push_range(range)
-            .map_err(|source| CreditError::InvalidRevRange {
-                range: range.clone(),
-                source,
-            })?;
-    } else {
-        revwalk.push_head()?;
-    }
-
-    Ok(revwalk)
-}
 
 /// Convert a civil date to days since the Unix epoch (1970-01-01).
 /// Algorithm from Howard Hinnant's `chrono`-compatible date library.
@@ -292,6 +268,10 @@ pub fn format_utc_iso8601(epoch: i64) -> String {
 mod tests {
     use super::*;
 
+    fn no_excludes() -> ExclusionFilter {
+        ExclusionFilter::new(&[]).unwrap()
+    }
+
     #[test]
     fn extract_pr_number_standard() {
         assert_eq!(extract_pr_number("feat: add login (#42)"), Some(42));
@@ -317,44 +297,6 @@ mod tests {
         assert_eq!(
             extract_pr_number("feat: add feature (#10)\n\nCo-authored-by: X"),
             Some(10)
-        );
-    }
-
-    fn make_commit(message: &str, parent_count: usize) -> CommitInfo {
-        CommitInfo {
-            oid: git2::Oid::ZERO_SHA1,
-            author: Author {
-                name: "Test".into(),
-                email: "test@test.com".into(),
-            },
-            author_time: 0,
-            message: message.into(),
-            parent_count,
-            deltas: vec![],
-        }
-    }
-
-    #[test]
-    fn is_squash_merge_with_pr() {
-        assert_eq!(
-            is_squash_merge(&make_commit("feat: add thing (#42)", 1)),
-            Some(42)
-        );
-    }
-
-    #[test]
-    fn is_squash_merge_merge_commit() {
-        assert_eq!(
-            is_squash_merge(&make_commit("Merge pull request #42", 2)),
-            None
-        );
-    }
-
-    #[test]
-    fn is_squash_merge_no_pr() {
-        assert_eq!(
-            is_squash_merge(&make_commit("just a regular commit", 1)),
-            None
         );
     }
 
@@ -542,17 +484,24 @@ mod tests {
         tb2.insert("file.txt", blob2, 0o100_644).unwrap();
         let tree2 = repo.find_tree(tb2.write().unwrap()).unwrap();
         let c1_commit = repo.find_commit(c1).unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "second", &tree2, &[&c1_commit])
+        let c2 = repo
+            .commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                "second (#7)",
+                &tree2,
+                &[&c1_commit],
+            )
             .unwrap();
 
-        let opts = WalkOptions {
-            rev_range: None,
-            since: None,
-        };
-        let commits = walk_commits(&repo, &opts, None).unwrap();
+        let commits = walk_commits(&repo, None, None, None, &no_excludes()).unwrap();
         assert_eq!(commits.len(), 2);
-        assert_eq!(commits[0].message, "second");
-        assert_eq!(commits[1].message, "first");
+        assert_eq!(commits[0].oid, c2);
+        assert_eq!(commits[0].pr_number, Some(7));
+        assert_eq!((commits[0].additions, commits[0].deletions), (1, 0));
+        assert_eq!(commits[1].oid, c1);
+        assert_eq!(commits[1].pr_number, None);
         assert_eq!(commits[0].author.name, "Alice");
     }
 
@@ -578,11 +527,7 @@ mod tests {
         )
         .unwrap();
 
-        let opts = WalkOptions {
-            rev_range: None,
-            since: None,
-        };
-        let commits = walk_commits(&repo, &opts, Some(&mm)).unwrap();
+        let commits = walk_commits(&repo, None, None, Some(&mm), &no_excludes()).unwrap();
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].author.name, "Alice New");
         assert_eq!(commits[0].author.email, "alice-new@example.com");

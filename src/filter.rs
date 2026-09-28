@@ -29,12 +29,12 @@ impl ExclusionFilter {
         self.patterns.iter().any(|re| re.is_match(path))
     }
 
-    /// Filter a list of file deltas, removing excluded files.
-    pub fn filter_deltas(&self, deltas: Vec<FileDelta>) -> Vec<FileDelta> {
+    /// Sum the additions and deletions of the non-excluded deltas.
+    pub fn line_totals(&self, deltas: &[FileDelta]) -> (u64, u64) {
         deltas
-            .into_iter()
+            .iter()
             .filter(|d| !self.is_excluded(&d.path))
-            .collect()
+            .fold((0, 0), |(a, d), f| (a + f.additions, d + f.deletions))
     }
 }
 
@@ -142,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn filter_deltas_removes_excluded() {
+    fn line_totals_skips_excluded() {
         let filter = ExclusionFilter::new(&["*.lock".into()]).unwrap();
         let deltas = vec![
             FileDelta {
@@ -156,8 +156,6 @@ mod tests {
                 deletions: 50,
             },
         ];
-        let filtered = filter.filter_deltas(deltas);
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].path, "src/main.rs");
+        assert_eq!(filter.line_totals(&deltas), (10, 5));
     }
 }

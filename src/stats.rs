@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::Serialize;
 
-use crate::git::{Author, FileDelta, is_bot_email};
+use crate::git::{Author, is_bot_email};
 
 // ---------------------------------------------------------------------------
 // JSON output types
@@ -58,67 +58,44 @@ pub struct Report {
 // Squash-merge proportional attribution
 // ---------------------------------------------------------------------------
 
-/// Compute proportional per-author attributions for a squash-merge.
+/// Split a squash merge's line totals across the PR's authors.
 ///
-/// `pr_author_deltas` is the list of (author, file deltas) per PR commit
-/// (may contain duplicates for the same author across multiple PR commits).
-/// `squash_deltas` is the merge commit's filtered file deltas.
-///
-/// Returns one [`Attribution`] per unique author in the PR, with their
-/// proportional share of the squash commit's totals. Each entry is marked
-/// `is_pr_author: true`. The sum of per-author additions/deletions may be
-/// slightly less than the squash totals due to integer-division rounding
-/// (preserved 0.2.0 contract).
+/// `weights` holds one `(author, additions, deletions)` entry per PR commit. Entries
+/// sharing an email are merged, and each author gets the share of `additions` and
+/// `deletions` their weights represent, or an equal split when the weights are all
+/// zero. Returns one attribution per author, ordered by email. Integer division
+/// rounds down, so the shares may sum to slightly less than the totals.
 #[must_use]
 pub fn compute_squash_attributions(
-    pr_author_deltas: &[(Author, Vec<FileDelta>)],
-    squash_deltas: &[FileDelta],
+    weights: &[(Author, u64, u64)],
+    additions: u64,
+    deletions: u64,
 ) -> Vec<Attribution> {
-    let total_squash_adds: u64 = squash_deltas.iter().map(|d| d.additions).sum();
-    let total_squash_dels: u64 = squash_deltas.iter().map(|d| d.deletions).sum();
-
-    // Aggregate by unique author (email) — fixes double-counting when the
-    // same author has multiple commits in a single PR.
-    let mut aggregated: HashMap<String, (Author, u64, u64)> = HashMap::new();
-    let mut grand_adds: u64 = 0;
-    let mut grand_dels: u64 = 0;
-
-    for (author, deltas) in pr_author_deltas {
-        let adds: u64 = deltas.iter().map(|d| d.additions).sum();
-        let dels: u64 = deltas.iter().map(|d| d.deletions).sum();
-        grand_adds += adds;
-        grand_dels += dels;
-        let entry = aggregated
+    let mut per_author: BTreeMap<String, (&Author, u64, u64)> = BTreeMap::new();
+    for (author, adds, dels) in weights {
+        let entry = per_author
             .entry(author.email.clone())
-            .or_insert_with(|| (author.clone(), 0, 0));
+            .or_insert((author, 0, 0));
         entry.1 += adds;
         entry.2 += dels;
     }
+    let (weight_adds, weight_dels) = per_author
+        .values()
+        .fold((0, 0), |(a, d), e| (a + e.1, d + e.2));
+    let num_authors = (per_author.len() as u64).max(1);
 
-    let num_authors = aggregated.len() as u64;
-    let equal_adds = total_squash_adds / num_authors.max(1);
-    let equal_dels = total_squash_dels / num_authors.max(1);
-
-    // Stable order: sort by email ascending.
-    let mut entries: Vec<_> = aggregated.into_values().collect();
-    entries.sort_by(|a, b| a.0.email.cmp(&b.0.email));
-
-    entries
-        .into_iter()
-        .map(|(author, adds, dels)| {
-            let attributed_adds = (total_squash_adds * adds)
-                .checked_div(grand_adds)
-                .unwrap_or(equal_adds);
-            let attributed_dels = (total_squash_dels * dels)
-                .checked_div(grand_dels)
-                .unwrap_or(equal_dels);
-            Attribution {
-                name: author.name,
-                email: author.email,
-                additions: attributed_adds,
-                deletions: attributed_dels,
-                is_pr_author: true,
-            }
+    per_author
+        .into_values()
+        .map(|(author, adds, dels)| Attribution {
+            name: author.name.clone(),
+            email: author.email.clone(),
+            additions: (additions * adds)
+                .checked_div(weight_adds)
+                .unwrap_or(additions / num_authors),
+            deletions: (deletions * dels)
+                .checked_div(weight_dels)
+                .unwrap_or(deletions / num_authors),
+            is_pr_author: true,
         })
         .collect()
 }
@@ -127,18 +104,22 @@ pub fn compute_squash_attributions(
 // Bot exclusion
 // ---------------------------------------------------------------------------
 
-/// Strip bot attributions from a [`CommitReport`].
+/// Remove bot attributions, then the commits left without any.
 ///
-/// Returns `None` when *every* attribution was a bot (drop the whole commit
-/// from the output), otherwise returns the commit with bot attributions
-/// removed.
-pub fn filter_bots(mut commit: CommitReport) -> Option<CommitReport> {
-    commit.attributions.retain(|a| !is_bot_email(&a.email));
-    if commit.attributions.is_empty() {
-        None
-    } else {
-        Some(commit)
-    }
+/// Returns the number of distinct bot emails removed.
+pub fn strip_bots(commits: &mut Vec<CommitReport>) -> u64 {
+    let mut bots = HashSet::new();
+    commits.retain_mut(|commit| {
+        commit.attributions.retain(|a| {
+            let is_bot = is_bot_email(&a.email);
+            if is_bot {
+                bots.insert(a.email.clone());
+            }
+            !is_bot
+        });
+        !commit.attributions.is_empty()
+    });
+    bots.len() as u64
 }
 
 // ---------------------------------------------------------------------------
@@ -207,14 +188,6 @@ mod tests {
         }
     }
 
-    fn delta(path: &str, adds: u64, dels: u64) -> FileDelta {
-        FileDelta {
-            path: path.into(),
-            additions: adds,
-            deletions: dels,
-        }
-    }
-
     fn commit_with(sha: &str, attributions: Vec<Attribution>) -> CommitReport {
         CommitReport {
             sha: sha.into(),
@@ -240,102 +213,53 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn squash_proportional_two_authors() {
-        let pr_deltas = vec![
-            (alice(), vec![delta("a.rs", 75, 0)]),
-            (bob(), vec![delta("b.rs", 25, 0)]),
-        ];
-        let squash = vec![delta("merged.rs", 100, 0)];
-
-        let result = compute_squash_attributions(&pr_deltas, &squash);
-
-        let a = result.iter().find(|a| a.name == "Alice").unwrap();
-        let b = result.iter().find(|a| a.name == "Bob").unwrap();
-        assert_eq!(a.additions, 75);
-        assert_eq!(b.additions, 25);
-        assert!(a.is_pr_author);
-        assert!(b.is_pr_author);
+    fn squash_proportional_two_authors_sorted_by_email() {
+        let weights = vec![(bob(), 25, 0), (alice(), 75, 0)];
+        let result = compute_squash_attributions(&weights, 100, 0);
+        assert_eq!(result[0].email, "alice@example.com");
+        assert_eq!(result[0].additions, 75);
+        assert_eq!(result[1].email, "bob@example.com");
+        assert_eq!(result[1].additions, 25);
+        assert!(result.iter().all(|a| a.is_pr_author));
     }
 
     #[test]
-    fn squash_zero_totals_falls_back_to_equal_split() {
-        let pr_deltas = vec![
-            (alice(), vec![delta("a.rs", 0, 0)]),
-            (bob(), vec![delta("b.rs", 0, 0)]),
-        ];
-        let squash = vec![delta("merged.rs", 10, 4)];
-
-        let result = compute_squash_attributions(&pr_deltas, &squash);
-        let a = result.iter().find(|a| a.name == "Alice").unwrap();
-        let b = result.iter().find(|a| a.name == "Bob").unwrap();
-        assert_eq!(a.additions, 5);
-        assert_eq!(b.additions, 5);
-        assert_eq!(a.deletions, 2);
-        assert_eq!(b.deletions, 2);
+    fn squash_zero_weights_falls_back_to_equal_split() {
+        let weights = vec![(alice(), 0, 0), (bob(), 0, 0)];
+        let result = compute_squash_attributions(&weights, 10, 4);
+        for a in &result {
+            assert_eq!((a.additions, a.deletions), (5, 2));
+        }
     }
 
     #[test]
     fn squash_same_author_multiple_commits() {
-        let pr_deltas = vec![
-            (alice(), vec![delta("a.rs", 30, 0)]),
-            (alice(), vec![delta("b.rs", 40, 0)]),
-            (alice(), vec![delta("c.rs", 30, 0)]),
-        ];
-        let squash = vec![delta("merged.rs", 100, 0)];
-
-        let result = compute_squash_attributions(&pr_deltas, &squash);
+        let weights = vec![(alice(), 30, 0), (alice(), 40, 0), (alice(), 30, 0)];
+        let result = compute_squash_attributions(&weights, 100, 0);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].additions, 100);
     }
 
     #[test]
-    fn squash_attributions_sorted_by_email() {
-        let pr_deltas = vec![
-            (bob(), vec![delta("b.rs", 50, 0)]),
-            (alice(), vec![delta("a.rs", 50, 0)]),
+    fn strip_bots_removes_bot_attributions_and_empty_commits() {
+        let dependabot = "dependabot[bot]@users.noreply.github.com";
+        let mut commits = vec![
+            commit_with("c1", vec![direct("dependabot", dependabot, 10, 0)]),
+            commit_with(
+                "c2",
+                vec![
+                    direct("Alice", "alice@example.com", 10, 5),
+                    direct("dependabot", dependabot, 100, 50),
+                    direct("ci", "ci[bot]@users.noreply.github.com", 1, 0),
+                ],
+            ),
+            commit_with("c3", vec![direct("Bob", "bob@example.com", 1, 1)]),
         ];
-        let squash = vec![delta("merged.rs", 100, 0)];
-        let result = compute_squash_attributions(&pr_deltas, &squash);
-        assert_eq!(result[0].email, "alice@example.com");
-        assert_eq!(result[1].email, "bob@example.com");
-    }
-
-    // -----------------------------------------------------------------------
-    // filter_bots
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn filter_bots_drops_full_bot_commit() {
-        let commit = commit_with(
-            "abc",
-            vec![direct(
-                "dependabot",
-                "dependabot[bot]@users.noreply.github.com",
-                10,
-                0,
-            )],
-        );
-        assert!(filter_bots(commit).is_none());
-    }
-
-    #[test]
-    fn filter_bots_strips_individual_bot_attributions() {
-        let commit = commit_with(
-            "abc",
-            vec![
-                direct("Alice", "alice@example.com", 10, 5),
-                direct("bot", "ci[bot]@users.noreply.github.com", 100, 50),
-            ],
-        );
-        let filtered = filter_bots(commit).unwrap();
-        assert_eq!(filtered.attributions.len(), 1);
-        assert_eq!(filtered.attributions[0].email, "alice@example.com");
-    }
-
-    #[test]
-    fn filter_bots_passthrough_when_no_bots() {
-        let commit = commit_with("abc", vec![direct("Alice", "alice@example.com", 10, 5)]);
-        assert!(filter_bots(commit).is_some());
+        assert_eq!(strip_bots(&mut commits), 2);
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].sha, "c2");
+        assert_eq!(commits[0].attributions.len(), 1);
+        assert_eq!(commits[1].sha, "c3");
     }
 
     // -----------------------------------------------------------------------
