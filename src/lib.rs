@@ -38,7 +38,7 @@ pub fn run(cli: &Cli) -> Result<()> {
         .context("failed to walk commits")?;
 
     let mut commits = match client.as_deref() {
-        Some(client) => expand_squash_merges(commits, client, mailmap.as_ref()),
+        Some(client) => expand_squash_merges(commits, client, mailmap.as_ref(), &filter),
         None => commits.iter().map(|c| author_report(c, true)).collect(),
     };
     let total_commits_walked = commits.len() as u64;
@@ -128,6 +128,7 @@ fn expand_squash_merges(
     commits: Vec<CommitInfo>,
     client: &dyn GitHubApi,
     mailmap: Option<&Mailmap>,
+    filter: &ExclusionFilter,
 ) -> Vec<CommitReport> {
     let squash_merges = commits.iter().filter(|c| c.pr_number.is_some()).count();
     let progress = ProgressBar::new(squash_merges as u64);
@@ -147,7 +148,7 @@ fn expand_squash_merges(
                         body: "rate limit exceeded (skipped)".into(),
                     })
                 } else {
-                    fetch_pr_weights(client, pr_number)
+                    fetch_pr_weights(client, pr_number, filter)
                 };
                 if matches!(result, Err(CreditError::GitHubApi { status: 403, .. })) {
                     rate_limited.store(true, Ordering::Relaxed);
@@ -195,12 +196,13 @@ fn expand_squash_merges(
 
 /// Weigh each author of a PR by the lines their commits changed.
 ///
-/// Returns one `(author, additions, deletions)` entry per PR commit. When every
-/// commit shares one email, the per-commit file fetches are skipped and that author
-/// is returned alone.
+/// Returns one `(author, additions, deletions)` entry per PR commit, counting only
+/// the non-excluded files. When every commit shares one email, the per-commit file
+/// fetches are skipped and that author is returned alone.
 fn fetch_pr_weights(
     client: &dyn GitHubApi,
     pr_number: u64,
+    filter: &ExclusionFilter,
 ) -> Result<Vec<(Author, u64, u64)>, CreditError> {
     let pr_commits = client.fetch_pr_commits(pr_number)?;
     let Some((first, _)) = pr_commits.first() else {
@@ -216,10 +218,7 @@ fn fetch_pr_weights(
     pr_commits
         .into_par_iter()
         .map(|(author, sha)| {
-            let (additions, deletions) = client
-                .fetch_commit_files(&sha)?
-                .iter()
-                .fold((0, 0), |(a, d), f| (a + f.additions, d + f.deletions));
+            let (additions, deletions) = filter.line_totals(&client.fetch_commit_files(&sha)?);
             Ok((author, additions, deletions))
         })
         .collect()
@@ -244,5 +243,144 @@ fn resolve_github_client(cli: &Cli, repo: &git2::Repository) -> Option<Box<dyn G
             eprintln!("warning: {e}, skipping GitHub lookups");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use git::FileDelta;
+
+    /// Serves PR commit lists and commit files from memory; unknown PRs are a 404.
+    #[derive(Default)]
+    struct MockApi {
+        prs: HashMap<u64, Vec<(Author, String)>>,
+        files: HashMap<String, Vec<FileDelta>>,
+    }
+
+    impl MockApi {
+        fn pr(mut self, number: u64, commits: &[(Author, &str, Vec<FileDelta>)]) -> Self {
+            let mut list = Vec::new();
+            for (author, sha, files) in commits {
+                list.push((author.clone(), (*sha).to_string()));
+                self.files.insert((*sha).to_string(), files.clone());
+            }
+            self.prs.insert(number, list);
+            self
+        }
+    }
+
+    impl GitHubApi for MockApi {
+        fn fetch_pr_commits(&self, pr_number: u64) -> Result<Vec<(Author, String)>, CreditError> {
+            self.prs
+                .get(&pr_number)
+                .cloned()
+                .ok_or(CreditError::GitHubApi {
+                    status: 404,
+                    body: "Not Found".into(),
+                })
+        }
+
+        fn fetch_commit_files(&self, sha: &str) -> Result<Vec<FileDelta>, CreditError> {
+            Ok(self.files.get(sha).cloned().unwrap_or_default())
+        }
+    }
+
+    fn author(name: &str, email: &str) -> Author {
+        Author {
+            name: name.into(),
+            email: email.into(),
+        }
+    }
+
+    fn delta(path: &str, additions: u64) -> Vec<FileDelta> {
+        vec![FileDelta {
+            path: path.into(),
+            additions,
+            deletions: 0,
+        }]
+    }
+
+    /// A squash merge of `pr_number` adding `additions` lines, committed by Merger.
+    fn squash(pr_number: u64, additions: u64) -> CommitInfo {
+        CommitInfo {
+            oid: git2::Oid::ZERO_SHA1,
+            author: author("Merger", "merger@example.com"),
+            author_time: 0,
+            pr_number: Some(pr_number),
+            additions,
+            deletions: 0,
+        }
+    }
+
+    fn expand(api: &MockApi, commit: CommitInfo, excludes: &[&str]) -> CommitReport {
+        let excludes: Vec<String> = excludes.iter().map(ToString::to_string).collect();
+        let filter = ExclusionFilter::new(&excludes).unwrap();
+        let mut reports = expand_squash_merges(vec![commit], api, None, &filter);
+        assert_eq!(reports.len(), 1);
+        reports.remove(0)
+    }
+
+    fn lines(report: &CommitReport) -> Vec<(&str, u64)> {
+        report
+            .attributions
+            .iter()
+            .map(|a| (a.email.as_str(), a.additions))
+            .collect()
+    }
+
+    #[test]
+    fn multi_author_pr_splits_by_weight() {
+        let api = MockApi::default().pr(
+            1,
+            &[
+                (
+                    author("Alice", "alice@example.com"),
+                    "a1",
+                    delta("a.rs", 30),
+                ),
+                (author("Bob", "bob@example.com"), "b1", delta("b.rs", 10)),
+            ],
+        );
+        let report = expand(&api, squash(1, 100), &[]);
+        assert!(report.is_squash_pr && report.accurate);
+        assert_eq!(
+            lines(&report),
+            [("alice@example.com", 75), ("bob@example.com", 25)]
+        );
+    }
+
+    #[test]
+    fn excluded_files_do_not_weigh_pr_authors() {
+        let api = MockApi::default().pr(
+            1,
+            &[
+                (
+                    author("Alice", "alice@example.com"),
+                    "a1",
+                    delta("Cargo.lock", 900),
+                ),
+                (
+                    author("Bob", "bob@example.com"),
+                    "b1",
+                    delta("src/main.rs", 10),
+                ),
+            ],
+        );
+        let report = expand(&api, squash(1, 10), &["*.lock"]);
+        assert_eq!(
+            lines(&report),
+            [("alice@example.com", 0), ("bob@example.com", 10)]
+        );
+    }
+
+    #[test]
+    fn unknown_pr_falls_back_to_the_squash_author() {
+        let report = expand(&MockApi::default(), squash(1, 10), &[]);
+        assert!(!report.is_squash_pr && !report.accurate);
+        assert_eq!(lines(&report), [("merger@example.com", 10)]);
+        assert!(!report.attributions[0].is_pr_author);
     }
 }
