@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use regex::Regex;
 use reqwest::blocking::Client;
-use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
+use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, RETRY_AFTER, USER_AGENT};
 use serde::Deserialize;
 
 use crate::error::CreditError;
@@ -108,12 +108,26 @@ impl GitHubClient {
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
+            if is_rate_limited(status, resp.headers()) {
+                return Err(CreditError::RateLimited);
+            }
             let body = resp.text().unwrap_or_default();
             return Err(CreditError::GitHubApi { status, body });
         }
 
         Ok(resp)
     }
+}
+
+/// GitHub signals rate limiting with a 429, or a 403 carrying an exhausted quota or
+/// a `retry-after` header; any other 403 is a permission error.
+fn is_rate_limited(status: u16, headers: &HeaderMap) -> bool {
+    status == 429
+        || status == 403
+            && (headers.contains_key(RETRY_AFTER)
+                || headers
+                    .get("x-ratelimit-remaining")
+                    .is_some_and(|v| v == "0"))
 }
 
 impl GitHubApi for GitHubClient {
@@ -281,6 +295,24 @@ mod tests {
     fn resolve_token_skips_empty() {
         let token = resolve_token_from_sources(Some(""), None, Some("gh"), None);
         assert_eq!(token.as_deref(), Some("gh"));
+    }
+
+    #[test]
+    fn rate_limit_detection() {
+        let none = HeaderMap::new();
+        let mut exhausted = HeaderMap::new();
+        exhausted.insert("x-ratelimit-remaining", "0".parse().unwrap());
+        let mut remaining = HeaderMap::new();
+        remaining.insert("x-ratelimit-remaining", "12".parse().unwrap());
+        let mut retry = HeaderMap::new();
+        retry.insert(RETRY_AFTER, "60".parse().unwrap());
+
+        assert!(is_rate_limited(429, &none));
+        assert!(is_rate_limited(403, &exhausted));
+        assert!(is_rate_limited(403, &retry));
+        assert!(!is_rate_limited(403, &remaining));
+        assert!(!is_rate_limited(403, &none));
+        assert!(!is_rate_limited(404, &exhausted));
     }
 
     #[test]

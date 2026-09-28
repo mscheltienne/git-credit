@@ -143,14 +143,11 @@ fn expand_squash_merges(
         .map(|commit| {
             let weights = commit.pr_number.map(|pr_number| {
                 let result = if rate_limited.load(Ordering::Relaxed) {
-                    Err(CreditError::GitHubApi {
-                        status: 403,
-                        body: "rate limit exceeded (skipped)".into(),
-                    })
+                    Err(CreditError::RateLimited)
                 } else {
                     fetch_pr_weights(client, pr_number, filter)
                 };
-                if matches!(result, Err(CreditError::GitHubApi { status: 403, .. })) {
+                if matches!(result, Err(CreditError::RateLimited)) {
                     rate_limited.store(true, Ordering::Relaxed);
                 }
                 progress.inc(1);

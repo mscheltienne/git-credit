@@ -20,6 +20,9 @@ pub enum CreditError {
     #[error("GitHub API returned {status}: {body}")]
     GitHubApi { status: u16, body: String },
 
+    #[error("GitHub API rate limit exceeded")]
+    RateLimited,
+
     #[error("could not determine GitHub remote from repository")]
     NoGitHubRemote,
 
