@@ -39,8 +39,8 @@ pub struct CommitInfo {
     pub author: Author,
     /// Author time in epoch seconds (UTC), as `git log --format='%aI'` shows it.
     pub author_time: i64,
-    /// PR number of a squash-merge candidate: a single-parent commit whose first
-    /// line contains `(#N)`.
+    /// PR number of a squash-merge candidate: a commit whose first line contains
+    /// `(#N)`.
     pub pr_number: Option<u64>,
     pub additions: u64,
     pub deletions: u64,
@@ -76,8 +76,11 @@ pub fn resolve_author(mailmap: Option<&Mailmap>, name: &str, email: &str) -> Aut
     }
 }
 
-/// Walk `rev_range` (or `HEAD`), skipping commits authored before `since`, and diff
-/// each commit against its first parent.
+/// Walk `rev_range` (or `HEAD`), skipping merge commits and commits authored before
+/// `since`, and diff each commit against its parent.
+///
+/// A merge commit only brings in lines its merged commits already carry, which the
+/// walk credits to their own authors.
 pub fn walk_commits(
     repo: &Repository,
     rev_range: Option<&str>,
@@ -103,15 +106,11 @@ pub fn walk_commits(
         let commit = repo.find_commit(oid?)?;
         let sig = commit.author();
         let author_time = sig.when().seconds();
-        if since.is_some_and(|since| author_time < since) {
+        if commit.parent_count() > 1 || since.is_some_and(|since| author_time < since) {
             continue;
         }
 
-        let pr_number = if commit.parent_count() == 1 {
-            extract_pr_number(commit.message().unwrap_or(""))
-        } else {
-            None
-        };
+        let pr_number = extract_pr_number(commit.message().unwrap_or(""));
         let (additions, deletions) = filter.line_totals(&diff_commit(repo, &commit)?);
         commits.push(CommitInfo {
             oid: commit.id(),
@@ -506,6 +505,56 @@ mod tests {
         assert_eq!(commits[1].oid, c1);
         assert_eq!(commits[1].pr_number, None);
         assert_eq!(commits[0].author.name, "Alice");
+    }
+
+    #[test]
+    fn walk_commits_skips_merge_commits() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        let sig = git2::Signature::now("Alice", "alice@example.com").unwrap();
+        let commit_file = |name: &str, content: &[u8], parents: &[&git2::Commit]| {
+            let mut tb = repo
+                .treebuilder(parents.first().map(|p| p.tree().unwrap()).as_ref())
+                .unwrap();
+            tb.insert(name, repo.blob(content).unwrap(), 0o100_644)
+                .unwrap();
+            let tree = repo.find_tree(tb.write().unwrap()).unwrap();
+            let oid = repo.commit(None, &sig, &sig, name, &tree, parents).unwrap();
+            repo.find_commit(oid).unwrap()
+        };
+        let base = commit_file("base.txt", b"base\n", &[]);
+        let feature = commit_file("feature.txt", b"feature\n", &[&base]);
+        let main = commit_file("main.txt", b"main\n", &[&base]);
+
+        let mut tb = repo.treebuilder(Some(&main.tree().unwrap())).unwrap();
+        tb.insert(
+            "feature.txt",
+            feature
+                .tree()
+                .unwrap()
+                .get_name("feature.txt")
+                .unwrap()
+                .id(),
+            0o100_644,
+        )
+        .unwrap();
+        let tree = repo.find_tree(tb.write().unwrap()).unwrap();
+        let merge = repo
+            .commit(
+                Some("HEAD"),
+                &sig,
+                &sig,
+                "Merge pull request #5 from owner/feature (#5)",
+                &tree,
+                &[&main, &feature],
+            )
+            .unwrap();
+
+        let commits = walk_commits(&repo, None, None, None, &no_excludes()).unwrap();
+        let oids: Vec<_> = commits.iter().map(|c| c.oid).collect();
+        assert_eq!(commits.len(), 3);
+        assert!(!oids.contains(&merge));
+        assert!(oids.contains(&feature.id()) && oids.contains(&main.id()));
     }
 
     #[test]

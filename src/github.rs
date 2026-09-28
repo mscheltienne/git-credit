@@ -6,6 +6,7 @@ use regex::Regex;
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, RETRY_AFTER, USER_AGENT};
 use serde::Deserialize;
+use serde::de::IgnoredAny;
 
 use crate::error::CreditError;
 use crate::git::{Author, FileDelta};
@@ -29,6 +30,7 @@ pub struct RepoSlug {
 pub(crate) struct PrCommit {
     pub sha: String,
     pub commit: PrCommitInner,
+    parents: Vec<IgnoredAny>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,6 +64,7 @@ struct GhCommitResponse {
 
 /// Abstraction over GitHub API calls, enabling mock implementations in tests.
 pub trait GitHubApi: Send + Sync {
+    /// List the author and SHA of each non-merge commit in the PR.
     fn fetch_pr_commits(&self, pr_number: u64) -> Result<Vec<(Author, String)>, CreditError>;
 
     fn fetch_commit_files(&self, sha: &str) -> Result<Vec<FileDelta>, CreditError>;
@@ -119,6 +122,22 @@ impl GitHubClient {
     }
 }
 
+/// Pair each non-merge PR commit with its author. A merge commit, such as the base
+/// branch merged into the PR, carries other people's lines and must not weigh on
+/// the split.
+fn non_merge_authors(commits: Vec<PrCommit>) -> impl Iterator<Item = (Author, String)> {
+    commits
+        .into_iter()
+        .filter(|c| c.parents.len() <= 1)
+        .map(|c| {
+            let author = Author {
+                name: c.commit.author.name.unwrap_or_else(|| "Unknown".into()),
+                email: c.commit.author.email.unwrap_or_else(|| "unknown".into()),
+            };
+            (author, c.sha)
+        })
+}
+
 /// GitHub signals rate limiting with a 429, or a 403 carrying an exhausted quota or
 /// a `retry-after` header; any other 403 is a permission error.
 fn is_rate_limited(status: u16, headers: &HeaderMap) -> bool {
@@ -139,18 +158,9 @@ impl GitHubApi for GitHubClient {
             let url = self.api_url(&format!(
                 "/pulls/{pr_number}/commits?per_page=100&page={page}"
             ));
-            let resp = self.get(&url)?;
-            let commits: Vec<PrCommit> = resp.json()?;
+            let commits: Vec<PrCommit> = self.get(&url)?.json()?;
             let count = commits.len();
-
-            for c in commits {
-                let author = Author {
-                    name: c.commit.author.name.unwrap_or_else(|| "Unknown".into()),
-                    email: c.commit.author.email.unwrap_or_else(|| "unknown".into()),
-                };
-                all.push((author, c.sha));
-            }
-
+            all.extend(non_merge_authors(commits));
             if count < 100 {
                 break;
             }
@@ -285,6 +295,31 @@ mod tests {
     #[test]
     fn resolve_token_skips_empty() {
         assert_eq!(resolve(Some(""), None, Some("gh")).as_deref(), Some("gh"));
+    }
+
+    #[test]
+    fn pr_commit_list_skips_merge_commits() {
+        let commits: Vec<PrCommit> = serde_json::from_str(
+            r#"[
+                {"sha": "a1", "parents": [{"sha": "p"}],
+                 "commit": {"author": {"name": "Alice", "email": "alice@example.com"}}},
+                {"sha": "m1", "parents": [{"sha": "a1"}, {"sha": "main"}],
+                 "commit": {"author": {"name": "Bob", "email": "bob@example.com"}}},
+                {"sha": "a2", "parents": [{"sha": "m1"}],
+                 "commit": {"author": {"name": null, "email": null}}}
+            ]"#,
+        )
+        .unwrap();
+        let authors: Vec<_> = non_merge_authors(commits)
+            .map(|(a, sha)| (a.email, sha))
+            .collect();
+        assert_eq!(
+            authors,
+            [
+                ("alice@example.com".to_string(), "a1".to_string()),
+                ("unknown".to_string(), "a2".to_string()),
+            ]
+        );
     }
 
     #[test]

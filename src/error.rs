@@ -23,6 +23,9 @@ pub enum CreditError {
     #[error("GitHub API rate limit exceeded")]
     RateLimited,
 
+    #[error("PR has no non-merge commits")]
+    EmptyPr,
+
     #[error("could not determine GitHub remote from repository")]
     NoGitHubRemote,
 

@@ -203,11 +203,7 @@ fn fetch_pr_weights(
 ) -> Result<Vec<(Author, u64, u64)>, CreditError> {
     let pr_commits = client.fetch_pr_commits(pr_number)?;
     let Some((first, _)) = pr_commits.first() else {
-        let unknown = Author {
-            name: "Unknown".into(),
-            email: "unknown".into(),
-        };
-        return Ok(vec![(unknown, 0, 0)]);
+        return Err(CreditError::EmptyPr);
     };
     let first_email = first.email.to_lowercase();
     if pr_commits
@@ -421,10 +417,12 @@ mod tests {
     }
 
     #[test]
-    fn unknown_pr_falls_back_to_the_squash_author() {
-        let report = expand(&MockApi::default(), squash(1, 10), &[]);
-        assert!(!report.is_squash_pr && !report.accurate);
-        assert_eq!(lines(&report), [("merger@example.com", 10)]);
-        assert!(!report.attributions[0].is_pr_author);
+    fn unknown_or_empty_pr_falls_back_to_the_squash_author() {
+        for api in [MockApi::default(), MockApi::default().pr(1, &[])] {
+            let report = expand(&api, squash(1, 10), &[]);
+            assert!(!report.is_squash_pr && !report.accurate);
+            assert_eq!(lines(&report), [("merger@example.com", 10)]);
+            assert!(!report.attributions[0].is_pr_author);
+        }
     }
 }
