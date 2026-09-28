@@ -11,7 +11,7 @@ use crate::error::CreditError;
 use crate::git::{Author, FileDelta};
 
 static GITHUB_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:https?://github\.com/|git@github\.com:)([^/]+)/([^/.]+?)(?:\.git)?$").unwrap()
+    Regex::new(r"(?:^|[@/])github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$").unwrap()
 });
 
 // ---------------------------------------------------------------------------
@@ -226,13 +226,7 @@ pub fn extract_slug(repo: &git2::Repository) -> Result<RepoSlug, CreditError> {
     parse_github_url(url).ok_or(CreditError::NoGitHubRemote)
 }
 
-/// Parse a GitHub remote URL into owner/repo.
-///
-/// Supports:
-/// - `https://github.com/owner/repo.git`
-/// - `https://github.com/owner/repo`
-/// - `git@github.com:owner/repo.git`
-/// - `git@github.com:owner/repo`
+/// Parse a GitHub HTTPS, SSH or scp-style remote URL into owner/repo.
 fn parse_github_url(url: &str) -> Option<RepoSlug> {
     GITHUB_URL_RE.captures(url).map(|cap| RepoSlug {
         owner: cap[1].to_string(),
@@ -290,35 +284,33 @@ mod tests {
     }
 
     #[test]
-    fn parse_github_https_url() {
-        let slug = parse_github_url("https://github.com/owner/repo.git").unwrap();
-        assert_eq!(slug.owner, "owner");
-        assert_eq!(slug.repo, "repo");
+    fn parse_github_urls() {
+        for (url, repo) in [
+            ("https://github.com/owner/repo.git", "repo"),
+            ("https://github.com/owner/repo", "repo"),
+            ("https://github.com/owner/repo/", "repo"),
+            ("git@github.com:owner/repo.git", "repo"),
+            ("git@github.com:owner/repo", "repo"),
+            ("ssh://git@github.com/owner/repo.git", "repo"),
+            ("https://github.com/owner/my.repo.git", "my.repo"),
+            ("git@github.com:owner/my.repo", "my.repo"),
+        ] {
+            let slug = parse_github_url(url).unwrap_or_else(|| panic!("{url} did not parse"));
+            assert_eq!(
+                (slug.owner.as_str(), slug.repo.as_str()),
+                ("owner", repo),
+                "{url}"
+            );
+        }
     }
 
     #[test]
-    fn parse_github_https_no_git_suffix() {
-        let slug = parse_github_url("https://github.com/owner/repo").unwrap();
-        assert_eq!(slug.owner, "owner");
-        assert_eq!(slug.repo, "repo");
-    }
-
-    #[test]
-    fn parse_github_ssh_url() {
-        let slug = parse_github_url("git@github.com:owner/repo.git").unwrap();
-        assert_eq!(slug.owner, "owner");
-        assert_eq!(slug.repo, "repo");
-    }
-
-    #[test]
-    fn parse_github_ssh_no_git_suffix() {
-        let slug = parse_github_url("git@github.com:owner/repo").unwrap();
-        assert_eq!(slug.owner, "owner");
-        assert_eq!(slug.repo, "repo");
-    }
-
-    #[test]
-    fn parse_non_github_url() {
-        assert!(parse_github_url("https://gitlab.com/owner/repo").is_none());
+    fn parse_non_github_urls() {
+        for url in [
+            "https://gitlab.com/owner/repo",
+            "https://notgithub.com/owner/repo",
+        ] {
+            assert!(parse_github_url(url).is_none(), "{url}");
+        }
     }
 }
