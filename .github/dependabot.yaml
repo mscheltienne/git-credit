@@ -11,3 +11,6 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    ignore:
+      # Its version refs pick the Rust toolchain, such as the MSRV pin in ci.yaml.
+      - dependency-name: dtolnay/rust-toolchain
