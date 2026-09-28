@@ -1,0 +1,15 @@
+.mermaid {
+  overflow: scroll;
+
+  >svg {
+    transition: max-width 0.1s;
+    max-width: 100%;
+    height: auto;
+  }
+
+  &:hover>svg {
+    max-width: 250%;
+    transition-duration: 0.5s;
+    transition-delay: 1s;
+  }
+}
