@@ -13,16 +13,10 @@ static PR_NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\(#(\d+)\)"
 // ---------------------------------------------------------------------------
 
 /// Identifies a commit author.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub struct Author {
     pub name: String,
     pub email: String,
-}
-
-impl Author {
-    pub fn is_bot(&self) -> bool {
-        is_bot_email(&self.email)
-    }
 }
 
 pub fn is_bot_email(email: &str) -> bool {

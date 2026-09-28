@@ -42,7 +42,6 @@ must_use_candidate = "allow"
 unsafe_code = "deny"
 
 [profile.release]
-opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = "symbols"

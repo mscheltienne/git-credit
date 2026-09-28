@@ -146,7 +146,7 @@ pub fn filter_bots(mut commit: CommitReport) -> Option<CommitReport> {
 // ---------------------------------------------------------------------------
 
 /// Aggregated stats for a single author, computed from a [`Report`].
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Default)]
 pub struct AuthorStats {
     pub name: String,
     pub email: String,

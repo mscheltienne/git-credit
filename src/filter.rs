@@ -5,7 +5,7 @@ use crate::git::FileDelta;
 
 /// A compiled set of glob exclusion patterns.
 pub struct ExclusionFilter {
-    patterns: Vec<(String, Regex)>,
+    patterns: Vec<Regex>,
 }
 
 impl ExclusionFilter {
@@ -15,32 +15,22 @@ impl ExclusionFilter {
             .iter()
             .map(|glob| {
                 let re = glob_to_regex(glob);
-                Regex::new(&re)
-                    .map(|r| (glob.clone(), r))
-                    .map_err(|_| CreditError::InvalidGlob {
-                        pattern: glob.clone(),
-                        reason: format!("failed to compile as regex: {re}"),
-                    })
+                Regex::new(&re).map_err(|_| CreditError::InvalidGlob {
+                    pattern: glob.clone(),
+                    reason: format!("failed to compile as regex: {re}"),
+                })
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self { patterns: compiled })
     }
 
-    /// Returns true if there are no exclusion patterns.
-    pub fn is_empty(&self) -> bool {
-        self.patterns.is_empty()
-    }
-
     /// Returns true if the given file path should be excluded.
     pub fn is_excluded(&self, path: &str) -> bool {
-        self.patterns.iter().any(|(_, re)| re.is_match(path))
+        self.patterns.iter().any(|re| re.is_match(path))
     }
 
     /// Filter a list of file deltas, removing excluded files.
     pub fn filter_deltas(&self, deltas: Vec<FileDelta>) -> Vec<FileDelta> {
-        if self.is_empty() {
-            return deltas;
-        }
         deltas
             .into_iter()
             .filter(|d| !self.is_excluded(&d.path))
@@ -148,7 +138,6 @@ mod tests {
     #[test]
     fn empty_filter_excludes_nothing() {
         let filter = ExclusionFilter::new(&[]).unwrap();
-        assert!(filter.is_empty());
         assert!(!filter.is_excluded("anything"));
     }
 

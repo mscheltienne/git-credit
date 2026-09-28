@@ -19,7 +19,7 @@ static GITHUB_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
 // ---------------------------------------------------------------------------
 
 /// Parsed owner/repo from a GitHub remote URL.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RepoSlug {
     pub owner: String,
     pub repo: String,

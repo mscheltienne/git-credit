@@ -34,7 +34,4 @@ pub enum CreditError {
 
     #[error("invalid mailmap file '{path}'")]
     MailmapParse { path: String, source: git2::Error },
-
-    #[error(transparent)]
-    Serialize(#[from] serde_json::Error),
 }

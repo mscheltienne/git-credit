@@ -100,8 +100,6 @@ pub fn create_test_repo(path: &Path) {
 
 /// Create a repo with a single Alice commit using a "wrong" author email,
 /// used by the `--mailmap-file` integration tests.
-///
-/// Returns the path of the created `main.rs` (caller may need it).
 pub fn create_repo_with_unmapped_alice(path: &Path) {
     let repo = Repository::init(path).unwrap();
     let alice_wrong = Signature::new(
