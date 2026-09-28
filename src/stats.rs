@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 use serde::Serialize;
 
@@ -61,10 +61,11 @@ pub struct Report {
 /// Split a squash merge's line totals across the PR's authors.
 ///
 /// `weights` holds one `(author, additions, deletions)` entry per PR commit. Entries
-/// sharing an email are merged, and each author gets the share of `additions` and
-/// `deletions` their weights represent, or an equal split when the weights are all
-/// zero. Returns one attribution per author, ordered by email. Integer division
-/// rounds down, so the shares may sum to slightly less than the totals.
+/// whose emails match case-insensitively are merged under the first one's identity,
+/// and each author gets the share of `additions` and `deletions` their weights
+/// represent, or an equal split when the weights are all zero. Returns one
+/// attribution per author, ordered by lowercased email. Integer division rounds
+/// down, so the shares may sum to slightly less than the totals.
 #[must_use]
 pub fn compute_squash_attributions(
     weights: &[(Author, u64, u64)],
@@ -74,7 +75,7 @@ pub fn compute_squash_attributions(
     let mut per_author: BTreeMap<String, (&Author, u64, u64)> = BTreeMap::new();
     for (author, adds, dels) in weights {
         let entry = per_author
-            .entry(author.email.clone())
+            .entry(author.email.to_lowercase())
             .or_insert((author, 0, 0));
         entry.1 += adds;
         entry.2 += dels;
@@ -106,14 +107,14 @@ pub fn compute_squash_attributions(
 
 /// Remove bot attributions, then the commits left without any.
 ///
-/// Returns the number of distinct bot emails removed.
+/// Returns the number of distinct bot emails removed, compared case-insensitively.
 pub fn strip_bots(commits: &mut Vec<CommitReport>) -> u64 {
     let mut bots = HashSet::new();
     commits.retain_mut(|commit| {
         commit.attributions.retain(|a| {
             let is_bot = is_bot_email(&a.email);
             if is_bot {
-                bots.insert(a.email.clone());
+                bots.insert(a.email.to_lowercase());
             }
             !is_bot
         });
@@ -140,14 +141,15 @@ pub struct AuthorStats {
 /// Fold a [`Report`] into a per-author rollup, sorted by total lines
 /// (additions + deletions) descending.
 ///
-/// Used by the table renderer; not part of the JSON output.
+/// Authors are keyed by case-insensitive email. Used by the table renderer; not
+/// part of the JSON output.
 #[must_use]
 pub fn rollup_by_author(report: &Report) -> Vec<AuthorStats> {
-    let mut map: HashMap<String, AuthorStats> = HashMap::new();
+    let mut map: BTreeMap<String, AuthorStats> = BTreeMap::new();
     for commit in &report.commits {
         for attribution in &commit.attributions {
             let entry = map
-                .entry(attribution.email.clone())
+                .entry(attribution.email.to_lowercase())
                 .or_insert_with(|| AuthorStats {
                     name: attribution.name.clone(),
                     email: attribution.email.clone(),
@@ -233,10 +235,15 @@ mod tests {
     }
 
     #[test]
-    fn squash_same_author_multiple_commits() {
-        let weights = vec![(alice(), 30, 0), (alice(), 40, 0), (alice(), 30, 0)];
+    fn squash_same_author_multiple_commits_ignoring_email_case() {
+        let shouted = Author {
+            name: "Alice".into(),
+            email: "Alice@Example.COM".into(),
+        };
+        let weights = vec![(shouted, 30, 0), (alice(), 40, 0), (alice(), 30, 0)];
         let result = compute_squash_attributions(&weights, 100, 0);
         assert_eq!(result.len(), 1);
+        assert_eq!(result[0].email, "Alice@Example.COM");
         assert_eq!(result[0].additions, 100);
     }
 
@@ -244,7 +251,15 @@ mod tests {
     fn strip_bots_removes_bot_attributions_and_empty_commits() {
         let dependabot = "dependabot[bot]@users.noreply.github.com";
         let mut commits = vec![
-            commit_with("c1", vec![direct("dependabot", dependabot, 10, 0)]),
+            commit_with(
+                "c1",
+                vec![direct(
+                    "dependabot",
+                    "Dependabot[bot]@users.noreply.github.com",
+                    10,
+                    0,
+                )],
+            ),
             commit_with(
                 "c2",
                 vec![
@@ -288,11 +303,12 @@ mod tests {
         let report = Report {
             commits: vec![
                 commit,
-                commit_with("c2", vec![direct("Alice", "alice@example.com", 5, 0)]),
+                commit_with("c2", vec![direct("Alice", "Alice@Example.com", 5, 0)]),
             ],
             summary: Summary::default(),
         };
         let rolled = rollup_by_author(&report);
+        assert_eq!(rolled.len(), 1);
         assert_eq!(rolled[0].contributions, 2);
         assert_eq!(rolled[0].prs, 1);
         assert_eq!(rolled[0].additions, 15);

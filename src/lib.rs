@@ -194,8 +194,8 @@ fn expand_squash_merges(
 /// Weigh each author of a PR by the lines their commits changed.
 ///
 /// Returns one `(author, additions, deletions)` entry per PR commit, counting only
-/// the non-excluded files. When every commit shares one email, the per-commit file
-/// fetches are skipped and that author is returned alone.
+/// the non-excluded files. When every commit shares one email (ignoring case), the
+/// per-commit file fetches are skipped and that author is returned alone.
 fn fetch_pr_weights(
     client: &dyn GitHubApi,
     pr_number: u64,
@@ -209,7 +209,11 @@ fn fetch_pr_weights(
         };
         return Ok(vec![(unknown, 0, 0)]);
     };
-    if pr_commits.iter().all(|(a, _)| a.email == first.email) {
+    let first_email = first.email.to_lowercase();
+    if pr_commits
+        .iter()
+        .all(|(a, _)| a.email.to_lowercase() == first_email)
+    {
         return Ok(vec![(first.clone(), 0, 0)]);
     }
     pr_commits
@@ -371,6 +375,49 @@ mod tests {
             lines(&report),
             [("alice@example.com", 0), ("bob@example.com", 10)]
         );
+    }
+
+    #[test]
+    fn pr_authors_dedup_case_insensitively() {
+        let api = MockApi::default().pr(
+            1,
+            &[
+                (
+                    author("Alice", "Alice@Example.com"),
+                    "a1",
+                    delta("a.rs", 30),
+                ),
+                (
+                    author("Alice", "alice@example.com"),
+                    "a2",
+                    delta("b.rs", 30),
+                ),
+                (author("Bob", "bob@example.com"), "b1", delta("c.rs", 40)),
+            ],
+        );
+        let report = expand(&api, squash(1, 100), &[]);
+        assert_eq!(
+            lines(&report),
+            [("Alice@Example.com", 60), ("bob@example.com", 40)]
+        );
+
+        let api = MockApi::default().pr(
+            2,
+            &[
+                (
+                    author("Alice", "Alice@Example.com"),
+                    "a1",
+                    delta("a.rs", 30),
+                ),
+                (
+                    author("Alice", "alice@example.com"),
+                    "a2",
+                    delta("b.rs", 30),
+                ),
+            ],
+        );
+        let report = expand(&api, squash(2, 100), &[]);
+        assert_eq!(lines(&report), [("Alice@Example.com", 100)]);
     }
 
     #[test]
