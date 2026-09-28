@@ -13,6 +13,22 @@ A contribution analysis tool that accurately attributes lines of code to
 individual authors, even across squash-merged pull requests, with support for
 file exclusion filters.
 
+## How it works
+
+1. **Walk.** git-credit walks the history (`HEAD`, or `--rev A..B`) and diffs
+   each commit against its parent, with rename detection, counting only the
+   files not matched by `--exclude`. Merge commits are skipped: their lines
+   are already credited through the commits they merge.
+2. **Detect squash merges.** A commit whose first line contains `(#N)`, as
+   GitHub writes it when squash-merging PR `#N`, is a squash-merge candidate.
+3. **Expand through GitHub.** For each candidate, git-credit lists the PR's
+   commits (merge commits skipped) and splits the squash commit's lines among
+   their authors, in proportion to the non-excluded lines each author changed
+   in the PR. Emails are compared case-insensitively, so one author committing
+   under two spellings is credited once. Shares are rounded down.
+4. **Fall back.** If the PR can't be fetched, the squash commit is credited to
+   its own author and flagged `accurate: false` so a consumer can retry later.
+
 ## Installation
 
 ### Homebrew (macOS / Linux)
@@ -50,14 +66,15 @@ git-credit
 # Analyze a specific repository
 git-credit --repo /path/to/repo
 
-# Limit to the last 50 commits
+# Limit to a commit range (A..B only)
 git-credit --rev HEAD~50..HEAD
 
-# Only include commits after a date
+# Only include commits authored on or after a date (midnight UTC)
 git-credit --since 2025-01-01
 
-# Exclude files from stats (repeatable)
-git-credit --exclude "*.lock" --exclude "*.generated.*"
+# Exclude files from stats (repeatable); `*` stays within one directory,
+# `**/` spans directories
+git-credit --exclude "**/*.lock" --exclude "docs/**"
 
 # Output as JSON instead of a table
 git-credit --format json
@@ -68,29 +85,29 @@ git-credit --bots
 # Use an external .mailmap (overrides any .mailmap inside the repository)
 git-credit --mailmap-file /path/to/.mailmap
 
-# Skip mailmap resolution entirely — emit raw commit.author() identities
+# Skip mailmap resolution entirely and report identities as recorded
 git-credit --no-mailmap
 
-# Skip GitHub API lookups (faster, but squash merges are attributed to the merge author
-# only)
+# Skip GitHub API lookups (faster, but each squash merge is then credited to its
+# own author)
 git-credit --no-github
 ```
 
 ### Mailmap
 
-By default git-credit applies the repository's `.mailmap` (or the file
-referenced by `mailmap.file` in git config) to canonicalize author identities.
-Pass `--mailmap-file <PATH>` to use an external file instead — useful when
-invoking git-credit against a clone you don't want to mutate, or when
+By default git-credit applies the repository's mailmap, which libgit2 builds
+from the worktree `.mailmap`, the `mailmap.blob` config and the `mailmap.file`
+config. Pass `--mailmap-file <PATH>` to use an external file instead — useful
+when invoking git-credit against a clone you don't want to mutate, or when
 aggregating mailmap entries across many repositories outside git-credit.
 
-The external mailmap **replaces** the repo's own; the two are not merged.
+The external mailmap **replaces** the repository's; the two are not merged.
 
-Pass `--no-mailmap` to skip mailmap resolution entirely — the JSON output
-then carries raw `commit.author()` identities verbatim. Useful when the
-consumer wants to apply mailmap canonicalization at read time rather than
-baking it into the emitted data. `--no-mailmap` and `--mailmap-file` are
-mutually exclusive.
+Pass `--no-mailmap` to skip mailmap resolution entirely, for both the git
+commit authors and the PR commit authors fetched from GitHub. The JSON output
+then carries the identities as recorded, which suits a consumer that applies
+the mailmap at read time. `--no-mailmap` and `--mailmap-file` are mutually
+exclusive.
 
 ### Bot filtering
 
@@ -108,8 +125,12 @@ GitHub token. It resolves the token in this order:
 3. `GH_TOKEN` environment variable
 4. `gh auth token` (the [GitHub CLI](https://cli.github.com/))
 
-If no token is found, git-credit runs in `--no-github` mode automatically
-with a warning.
+If no token is found, or the `origin` remote is not on GitHub, git-credit runs
+in `--no-github` mode automatically with a warning.
+
+When GitHub rate-limits the run (a 429, or a 403 with an exhausted quota),
+git-credit stops calling the API and every remaining squash merge falls back
+to `accurate: false`.
 
 ### Example table output
 
@@ -127,17 +148,22 @@ with a warning.
 
 ### JSON output
 
-`--format json` emits one record per processed commit. For squash-merge PRs
-`attributions` carries one entry per re-attributed author; for regular commits
-the array has a single entry. `commits[]` is sorted by `author_date` ascending,
-with `sha` as a tie-breaker.
+`--format json` emits one record per walked commit (merge commits are not
+walked). For a squash merge expanded through GitHub (`is_squash_pr: true`),
+`attributions` carries one entry per PR author, each with `is_pr_author: true`;
+otherwise the array has a single entry. `commits[]` is sorted by `author_date`
+(UTC, `YYYY-MM-DDTHH:MM:SSZ`) ascending, with `sha` as a tie-breaker.
 
-Each commit also carries an `accurate` flag. It is `true` for normally-processed
-commits (regular commits and successfully-expanded squash-merge PRs) and `false`
-when a squash-merge could not be expanded — e.g. the GitHub API rate-limited
-the run, returned an error, or no token was available — and the commit fell
-back to merge-author attribution. Consumers can use this flag to retry later
-when the API recovers.
+Each commit also carries an `accurate` flag. It is `false` when a squash merge
+could not be expanded because the GitHub API rate-limited the run, returned an
+error, or listed no commits for the PR. The commit is then credited to the
+squash commit's own author, and consumers can retry it once the API recovers.
+Every other commit is `accurate: true`, including squash merges reported as
+regular commits because GitHub lookups were off (`--no-github`, no token, or
+no GitHub remote).
+
+The `summary` counts the commits reported before bot filtering, the squash
+merges expanded, and the distinct bot emails removed.
 
 ```json
 {
@@ -203,10 +229,18 @@ when the API recovers.
 }
 ```
 
-In the example above, the third commit was a squash-merge whose PR expansion
-failed (rate limit, API error, or missing token); git-credit emits it with
-`is_squash_pr: false`, the merge committer as the sole attribution, and
-`accurate: false` so the caller knows to retry.
+In the example above, the third commit was a squash merge whose PR expansion
+failed; git-credit emits it with `is_squash_pr: false`, the squash commit's
+author as the sole attribution, and `accurate: false` so the caller knows to
+retry.
+
+### Limits
+
+- GitHub lists at most 250 commits per PR, so later commits of a larger PR
+  don't weigh on the split.
+- Only the first page of files (up to 300) of each PR commit is read, so the
+  weight of a larger commit is undercounted.
+- `--rev` accepts only a range (`A..B`), not a single revision or `A...B`.
 
 ## Development
 
@@ -231,13 +265,20 @@ cargo build
 ### Commands
 
 ```sh
-cargo build              # Build
-cargo test               # Run all tests
-cargo clippy             # Lint
-cargo fmt                # Format
-cargo deny check         # Audit dependencies
-cargo llvm-cov           # Coverage report
+cargo build                                  # Build
+cargo test                                   # Run all tests
+cargo clippy --all-targets -- -D warnings    # Lint, as CI does
+cargo fmt                                    # Format
+pre-commit run --all-files                   # typos, yamllint, fmt, clippy
+cargo deny check                             # Audit dependencies
+cargo llvm-cov                               # Coverage report
 ```
+
+### Documentation
+
+[`doc/`](doc/README.md) is an [Obsidian](https://obsidian.md/) vault covering
+the attribution pipeline, the CLI and JSON contract, and development in more
+depth. Open the folder as a vault in Obsidian, or read the Markdown directly.
 
 ## License
 
