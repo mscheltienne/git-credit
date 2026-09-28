@@ -206,10 +206,9 @@ fn parse_date_inner(date_str: &str) -> Option<i64> {
     let year: i64 = parts[0].parse().ok()?;
     let month: i64 = parts[1].parse().ok()?;
     let day: i64 = parts[2].parse().ok()?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    Some(days_from_civil(year, month, day) * 86400)
+    let days = days_from_civil(year, month, day);
+    // An impossible date such as 2025-02-30 normalizes to another day.
+    (civil_from_days(days) == (year, month, day)).then_some(days * 86400)
 }
 
 // ---------------------------------------------------------------------------
@@ -319,6 +318,10 @@ mod tests {
         assert!(parse_date_to_epoch("not-a-date").is_err());
         assert!(parse_date_to_epoch("2025-13-01").is_err());
         assert!(parse_date_to_epoch("2025-01-32").is_err());
+        assert!(parse_date_to_epoch("2025-02-29").is_err());
+        assert!(parse_date_to_epoch("2025-04-31").is_err());
+        assert!(parse_date_to_epoch("2025-00-10").is_err());
+        assert!(parse_date_to_epoch("2024-02-29").is_ok());
     }
 
     #[test]
