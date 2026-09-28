@@ -183,32 +183,31 @@ impl GitHubApi for GitHubClient {
 // Token resolution
 // ---------------------------------------------------------------------------
 
-/// Resolve a GitHub token using the chain:
-/// 1. Explicit flag value
-/// 2. `GITHUB_TOKEN` environment variable
-/// 3. `GH_TOKEN` environment variable
-/// 4. `gh auth token` command
+/// Resolve a GitHub token from, in order: the `--token` flag, `GITHUB_TOKEN`,
+/// `GH_TOKEN`, then `gh auth token`. Empty values are skipped.
 pub fn resolve_token(flag_token: Option<&str>) -> Option<String> {
     resolve_token_from_sources(
         flag_token,
         std::env::var("GITHUB_TOKEN").ok().as_deref(),
         std::env::var("GH_TOKEN").ok().as_deref(),
-        gh_auth_token().as_deref(),
+        gh_auth_token,
     )
 }
 
-/// Pure function for testability — takes all four token sources directly.
+/// [`resolve_token`] with its sources injected; `gh_cli_token` runs only when no
+/// other source has a token.
 pub(crate) fn resolve_token_from_sources(
     flag: Option<&str>,
     github_token_env: Option<&str>,
     gh_token_env: Option<&str>,
-    gh_cli_token: Option<&str>,
+    gh_cli_token: impl FnOnce() -> Option<String>,
 ) -> Option<String> {
-    [flag, github_token_env, gh_token_env, gh_cli_token]
+    [flag, github_token_env, gh_token_env]
         .into_iter()
         .flatten()
         .find(|t| !t.is_empty())
         .map(String::from)
+        .or_else(gh_cli_token)
 }
 
 /// Attempt to get a token from the `gh` CLI.
@@ -256,45 +255,36 @@ fn parse_github_url(url: &str) -> Option<RepoSlug> {
 mod tests {
     use super::*;
 
+    fn unreachable_cli() -> Option<String> {
+        panic!("gh auth token must not run when another source has a token")
+    }
+
+    fn resolve(flag: Option<&str>, github: Option<&str>, gh: Option<&str>) -> Option<String> {
+        resolve_token_from_sources(flag, github, gh, unreachable_cli)
+    }
+
     #[test]
-    fn resolve_token_flag_wins() {
-        let token = resolve_token_from_sources(
-            Some("flag_token"),
-            Some("env_token"),
-            Some("gh_token"),
-            Some("cli_token"),
+    fn resolve_token_precedence() {
+        let cli = || Some("cli".to_string());
+        assert_eq!(
+            resolve(Some("flag"), Some("env"), Some("gh")).as_deref(),
+            Some("flag")
         );
-        assert_eq!(token.as_deref(), Some("flag_token"));
-    }
-
-    #[test]
-    fn resolve_token_env_fallback() {
-        let token = resolve_token_from_sources(None, Some("env_token"), Some("gh_token"), None);
-        assert_eq!(token.as_deref(), Some("env_token"));
-    }
-
-    #[test]
-    fn resolve_token_gh_env_fallback() {
-        let token = resolve_token_from_sources(None, None, Some("gh_token"), None);
-        assert_eq!(token.as_deref(), Some("gh_token"));
-    }
-
-    #[test]
-    fn resolve_token_cli_fallback() {
-        let token = resolve_token_from_sources(None, None, None, Some("cli_token"));
-        assert_eq!(token.as_deref(), Some("cli_token"));
-    }
-
-    #[test]
-    fn resolve_token_none() {
-        let token = resolve_token_from_sources(None, None, None, None);
-        assert!(token.is_none());
+        assert_eq!(
+            resolve(None, Some("env"), Some("gh")).as_deref(),
+            Some("env")
+        );
+        assert_eq!(resolve(None, None, Some("gh")).as_deref(), Some("gh"));
+        assert_eq!(
+            resolve_token_from_sources(None, None, None, cli).as_deref(),
+            Some("cli")
+        );
+        assert_eq!(resolve_token_from_sources(None, None, None, || None), None);
     }
 
     #[test]
     fn resolve_token_skips_empty() {
-        let token = resolve_token_from_sources(Some(""), None, Some("gh"), None);
-        assert_eq!(token.as_deref(), Some("gh"));
+        assert_eq!(resolve(Some(""), None, Some("gh")).as_deref(), Some("gh"));
     }
 
     #[test]
