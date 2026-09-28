@@ -8,8 +8,7 @@ use common::{
     ALICE_C1_EPOCH, ALICE_C3_EPOCH, BOB_C2_EPOCH, create_repo_with_unmapped_alice, create_test_repo,
 };
 
-// Build-time sanity: the fixture ordering documented in `create_test_repo`
-// matches what the integration tests rely on.
+// The fixture commits must be in this author-date order.
 const _: () = {
     assert!(ALICE_C1_EPOCH < BOB_C2_EPOCH);
     assert!(BOB_C2_EPOCH < ALICE_C3_EPOCH);
@@ -24,10 +23,6 @@ fn sum_additions(json: &serde_json::Value) -> u64 {
         .map(|a| a["additions"].as_u64().unwrap())
         .sum()
 }
-
-// ---------------------------------------------------------------------------
-// Basic flags
-// ---------------------------------------------------------------------------
 
 #[test]
 fn help_flag() {
@@ -48,10 +43,6 @@ fn version_flag() {
         .success()
         .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
 }
-
-// ---------------------------------------------------------------------------
-// Running against a test repo
-// ---------------------------------------------------------------------------
 
 #[test]
 fn table_output_on_test_repo() {
@@ -161,23 +152,18 @@ fn exclude_filters_files() {
     assert!(sum_additions(&with_json) < sum_additions(&without_json));
 }
 
-// ---------------------------------------------------------------------------
-// --mailmap-file
-// ---------------------------------------------------------------------------
-
 #[test]
 fn mailmap_file_overrides_repo_mailmap() {
     let dir = tempfile::tempdir().unwrap();
     create_repo_with_unmapped_alice(dir.path());
 
-    // In-repo mailmap maps the wrong email to a "wrong" target.
+    // Repository mailmap that `--mailmap-file` must override.
     fs::write(
         dir.path().join(".mailmap"),
         "Alice Wrong <alice-wrong@example.com> <alice-old@example.com>\n",
     )
     .unwrap();
 
-    // External mailmap maps the wrong email to the canonical identity.
     let external_dir = tempfile::tempdir().unwrap();
     let external_path = external_dir.path().join(".mailmap");
     fs::write(
@@ -225,17 +211,12 @@ fn mailmap_file_missing_errors() {
         .stderr(predicate::str::contains("could not read mailmap file"));
 }
 
-// ---------------------------------------------------------------------------
-// --no-mailmap
-// ---------------------------------------------------------------------------
-
 #[test]
 fn no_mailmap_bypasses_in_repo_mailmap() {
     let dir = tempfile::tempdir().unwrap();
     create_repo_with_unmapped_alice(dir.path());
 
-    // In-repo mailmap that would rewrite the author when honored. `--no-mailmap`
-    // must skip it.
+    // Repository mailmap that `--no-mailmap` must ignore.
     fs::write(
         dir.path().join(".mailmap"),
         "Alice Smith <alice@example.com> <alice-old@example.com>\n",
@@ -257,7 +238,6 @@ fn no_mailmap_bypasses_in_repo_mailmap() {
     assert!(output.status.success(), "git-credit failed: {output:?}");
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let attribution = &json["commits"][0]["attributions"][0];
-    // Raw author survives because the in-repo .mailmap is not consulted.
     assert_eq!(attribution["email"], "alice-old@example.com");
     assert_eq!(attribution["name"], "Alice Old");
 }
@@ -285,10 +265,6 @@ fn mailmap_file_invalid_errors() {
         .failure()
         .stderr(predicate::str::contains("invalid mailmap file"));
 }
-
-// ---------------------------------------------------------------------------
-// Error cases
-// ---------------------------------------------------------------------------
 
 #[test]
 fn invalid_repo_path_errors() {

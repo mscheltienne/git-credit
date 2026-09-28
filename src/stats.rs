@@ -4,22 +4,15 @@ use serde::Serialize;
 
 use crate::git::{Author, is_bot_email};
 
-// ---------------------------------------------------------------------------
-// JSON output types
-// ---------------------------------------------------------------------------
-
-/// One emitted commit (or one squash-merge with multiple authors).
+/// One commit of the report.
 ///
-/// For regular direct commits `attributions` has a single entry.
-/// For successfully-expanded squash-merge PRs it has one entry per
-/// re-attributed author, each marked `is_pr_author: true`.
-/// For failed squash-merge expansion (no token / API error) it falls back
-/// to a single entry with `is_squash_pr: false` and `accurate: false`.
-///
-/// `accurate` is `true` for normally-processed commits. It is `false` when
-/// the squash-merge PR could not be expanded (rate limit, API error,
-/// missing token) and the row is a fallback attribution to the merge
-/// committer. Consumers use this flag to decide whether to retry later.
+/// `attributions` has a single entry, except for a squash merge expanded through the
+/// GitHub API (`is_squash_pr: true`), which has one entry per PR author, each with
+/// `is_pr_author: true`. `accurate` is `false` when that expansion failed (rate limit,
+/// API error, or a PR without non-merge commits): the row then credits the squash
+/// commit's author, and consumers may retry it later. Without GitHub access
+/// (`--no-github`, no token, no GitHub remote), squash merges are reported as regular
+/// commits with `accurate: true`.
 #[derive(Debug, Clone, Serialize)]
 pub struct CommitReport {
     pub sha: String,
@@ -42,8 +35,11 @@ pub struct Attribution {
 /// Run-level counters.
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct Summary {
+    /// Commits reported before bot filtering; merge commits are not walked.
     pub total_commits_walked: u64,
+    /// Squash merges credited to their PR's authors via the GitHub API.
     pub squash_merges_expanded: u64,
+    /// Distinct bot emails removed from the attributions.
     pub bots_excluded: u64,
 }
 
@@ -53,10 +49,6 @@ pub struct Report {
     pub commits: Vec<CommitReport>,
     pub summary: Summary,
 }
-
-// ---------------------------------------------------------------------------
-// Squash-merge proportional attribution
-// ---------------------------------------------------------------------------
 
 /// Split a squash merge's line totals across the PR's authors.
 ///
@@ -101,10 +93,6 @@ pub fn compute_squash_attributions(
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// Bot exclusion
-// ---------------------------------------------------------------------------
-
 /// Remove bot attributions, then the commits left without any.
 ///
 /// Returns the number of distinct bot emails removed, compared case-insensitively.
@@ -123,10 +111,6 @@ pub fn strip_bots(commits: &mut Vec<CommitReport>) -> u64 {
     bots.len() as u64
 }
 
-// ---------------------------------------------------------------------------
-// Per-author rollup (used by the table renderer)
-// ---------------------------------------------------------------------------
-
 /// Aggregated stats for a single author, computed from a [`Report`].
 #[derive(Debug, Default)]
 pub struct AuthorStats {
@@ -138,11 +122,8 @@ pub struct AuthorStats {
     pub deletions: u64,
 }
 
-/// Fold a [`Report`] into a per-author rollup, sorted by total lines
-/// (additions + deletions) descending.
-///
-/// Authors are keyed by case-insensitive email. Used by the table renderer; not
-/// part of the JSON output.
+/// Per-author totals for the table output, keyed by case-insensitive email and sorted
+/// by additions + deletions, descending.
 #[must_use]
 pub fn rollup_by_author(report: &Report) -> Vec<AuthorStats> {
     let mut map: BTreeMap<String, AuthorStats> = BTreeMap::new();
@@ -167,10 +148,6 @@ pub fn rollup_by_author(report: &Report) -> Vec<AuthorStats> {
     rolled.sort_by_key(|a| std::cmp::Reverse(a.additions + a.deletions));
     rolled
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -209,10 +186,6 @@ mod tests {
             is_pr_author: false,
         }
     }
-
-    // -----------------------------------------------------------------------
-    // compute_squash_attributions
-    // -----------------------------------------------------------------------
 
     #[test]
     fn squash_proportional_two_authors_sorted_by_email() {
@@ -276,10 +249,6 @@ mod tests {
         assert_eq!(commits[0].attributions.len(), 1);
         assert_eq!(commits[1].sha, "c3");
     }
-
-    // -----------------------------------------------------------------------
-    // rollup_by_author
-    // -----------------------------------------------------------------------
 
     #[test]
     fn rollup_two_authors_sorted_by_total_desc() {

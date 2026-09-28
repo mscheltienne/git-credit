@@ -10,15 +10,19 @@ pub struct Cli {
     #[arg(long, default_value = ".")]
     pub repo: PathBuf,
 
-    /// File glob patterns to exclude from stats (repeatable).
+    /// Exclude files matching this glob from the stats (repeatable).
+    ///
+    /// The glob is matched against the whole path: `*` and `?` stay within one
+    /// directory, `**` spans directories. `*.lock` matches only top-level files; use
+    /// `**/*.lock`.
     #[arg(long = "exclude")]
     pub excludes: Vec<String>,
 
-    /// Only include commits after this date (YYYY-MM-DD).
+    /// Only include commits authored on or after this date (YYYY-MM-DD, UTC).
     #[arg(long)]
     pub since: Option<String>,
 
-    /// Commit range (e.g. main~50..main).
+    /// Commit range, as A..B (e.g. main~50..main).
     #[arg(long)]
     pub rev: Option<String>,
 
@@ -26,7 +30,7 @@ pub struct Cli {
     #[arg(long, value_enum, default_value = "table")]
     pub format: OutputFormat,
 
-    /// GitHub personal access token.
+    /// GitHub token; defaults to `GITHUB_TOKEN`, `GH_TOKEN`, then `gh auth token`.
     #[arg(long)]
     pub token: Option<String>,
 
@@ -38,20 +42,17 @@ pub struct Cli {
     #[arg(long)]
     pub bots: bool,
 
-    /// Use an external `.mailmap` file instead of the repository's own.
+    /// Use this `.mailmap` file instead of the repository's.
     ///
-    /// When set, the file at PATH replaces (not merges with) the repo's
-    /// in-tree `.mailmap` and any user-global mailmap. Useful when invoking
-    /// git-credit against a clone you don't want to mutate.
+    /// It replaces, not extends, the repository's `.mailmap`, `mailmap.blob` and
+    /// `mailmap.file`.
     #[arg(long = "mailmap-file", value_name = "PATH")]
     pub mailmap_file: Option<PathBuf>,
 
-    /// Skip all mailmap resolution and emit raw `commit.author()` identities.
+    /// Report author identities as recorded, without mailmap resolution.
     ///
-    /// Bypasses both the repository's in-tree `.mailmap` (and the
-    /// `mailmap.file` git config) and any `--mailmap-file` argument — the
-    /// two flags are mutually exclusive. Useful when the consumer wants to
-    /// apply mailmap canonicalization at read time over the raw data.
+    /// Applies to both git commit authors and the PR commit authors fetched from
+    /// GitHub.
     #[arg(long = "no-mailmap", conflicts_with = "mailmap_file")]
     pub no_mailmap: bool,
 }
@@ -95,7 +96,6 @@ mod tests {
             "/tmp/.mailmap",
         ])
         .unwrap_err();
-        // Clap labels mutually-exclusive arg errors as `ArgumentConflict`.
         assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 

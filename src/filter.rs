@@ -38,13 +38,11 @@ impl ExclusionFilter {
     }
 }
 
-/// Convert a glob pattern to a regex pattern.
+/// Translate a glob into a regex matching the whole path.
 ///
-/// Supported syntax:
-/// - `*` matches any sequence of non-`/` characters
-/// - `**` matches any sequence of characters including `/`
-/// - `?` matches any single non-`/` character
-/// - All other characters are escaped as regex literals
+/// `*` and `?` match within one path component, `**/` matches zero or more
+/// directories, any other `**` matches anything. All other characters, `[` included,
+/// are literal.
 fn glob_to_regex(glob: &str) -> String {
     let mut regex = String::from("^");
     let chars: Vec<char> = glob.chars().collect();
@@ -53,7 +51,6 @@ fn glob_to_regex(glob: &str) -> String {
     while i < chars.len() {
         match chars[i] {
             '*' if i + 1 < chars.len() && chars[i + 1] == '*' => {
-                // ** matches everything including /
                 if i + 2 < chars.len() && chars[i + 2] == '/' {
                     regex.push_str("(.*/)?");
                     i += 3;

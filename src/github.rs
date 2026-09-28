@@ -15,10 +15,6 @@ static GITHUB_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:^|[@/])github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$").unwrap()
 });
 
-// ---------------------------------------------------------------------------
-// Data types
-// ---------------------------------------------------------------------------
-
 /// Parsed owner/repo from a GitHub remote URL.
 #[derive(Debug)]
 pub struct RepoSlug {
@@ -58,21 +54,19 @@ struct GhCommitResponse {
     files: Option<Vec<GhFileEntry>>,
 }
 
-// ---------------------------------------------------------------------------
-// Trait for testability
-// ---------------------------------------------------------------------------
-
-/// Abstraction over GitHub API calls, enabling mock implementations in tests.
+/// The GitHub API calls behind squash-merge attribution, mocked in the tests.
 pub trait GitHubApi: Send + Sync {
     /// List the author and SHA of each non-merge commit in the PR.
+    ///
+    /// GitHub lists at most 250 commits per PR; later ones are missing.
     fn fetch_pr_commits(&self, pr_number: u64) -> Result<Vec<(Author, String)>, CreditError>;
 
+    /// Per-file line stats of a commit.
+    ///
+    /// Only the first page of files is read (up to 300), so larger commits are
+    /// undercounted.
     fn fetch_commit_files(&self, sha: &str) -> Result<Vec<FileDelta>, CreditError>;
 }
-
-// ---------------------------------------------------------------------------
-// GitHub client
-// ---------------------------------------------------------------------------
 
 pub struct GitHubClient {
     client: Client,
@@ -189,10 +183,6 @@ impl GitHubApi for GitHubClient {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Token resolution
-// ---------------------------------------------------------------------------
-
 /// Resolve a GitHub token from, in order: the `--token` flag, `GITHUB_TOKEN`,
 /// `GH_TOKEN`, then `gh auth token`. Empty values are skipped.
 pub fn resolve_token(flag_token: Option<&str>) -> Option<String> {
@@ -233,18 +223,11 @@ fn gh_auth_token() -> Option<String> {
         })
 }
 
-// ---------------------------------------------------------------------------
-// Slug extraction
-// ---------------------------------------------------------------------------
-
 /// Extract the GitHub owner/repo from the repository's `origin` remote URL.
 pub fn extract_slug(repo: &git2::Repository) -> Result<RepoSlug, CreditError> {
     let remote = repo
         .find_remote("origin")
         .map_err(|_| CreditError::NoGitHubRemote)?;
-    // `Remote::url()` returns `Result<&str, git2::Error>` since git2 0.21
-    // (non-UTF-8 URLs surface as `Err`); previously it was `Option<&str>`.
-    // Either failure mode collapses to `NoGitHubRemote` for our purposes.
     let url = remote.url().map_err(|_| CreditError::NoGitHubRemote)?;
     parse_github_url(url).ok_or(CreditError::NoGitHubRemote)
 }
@@ -256,10 +239,6 @@ fn parse_github_url(url: &str) -> Option<RepoSlug> {
         repo: cap[2].to_string(),
     })
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

@@ -21,7 +21,7 @@ use git::{Author, CommitInfo, format_utc_iso8601};
 use github::GitHubApi;
 use stats::{Attribution, CommitReport, Report, Summary, compute_squash_attributions, strip_bots};
 
-/// Main entry point — orchestrates the full analysis.
+/// Run the analysis and print the report to stdout.
 pub fn run(cli: &Cli) -> Result<()> {
     let repo = git::open_repo(&cli.repo).context("could not open git repository")?;
     let mailmap = load_mailmap(cli, &repo)?;
@@ -48,6 +48,7 @@ pub fn run(cli: &Cli) -> Result<()> {
     } else {
         strip_bots(&mut commits)
     };
+    // Comparing `author_date` strings is chronological because they are fixed-width UTC.
     commits.sort_by(|a, b| {
         a.author_date
             .cmp(&b.author_date)
@@ -67,11 +68,9 @@ pub fn run(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-/// Load the mailmap from disk: prefer `--mailmap-file <PATH>` if set,
-/// else fall back to `repo.mailmap()` (worktree `.mailmap` → `HEAD:.mailmap`
-/// → `mailmap.file` config). Returns `Ok(None)` when `--no-mailmap` is set,
-/// short-circuiting both paths so the output carries raw `commit.author()`
-/// identities.
+/// Load the mailmap: `--mailmap-file` if given, else the repository's (libgit2 merges
+/// the worktree `.mailmap`, `mailmap.blob` and `mailmap.file`). `None` with
+/// `--no-mailmap`.
 fn load_mailmap(cli: &Cli, repo: &git2::Repository) -> Result<Option<Mailmap>, CreditError> {
     if cli.no_mailmap {
         return Ok(None);
@@ -137,6 +136,7 @@ fn expand_squash_merges(
             .expect("valid template")
             .progress_chars("=> "),
     );
+    // After a rate limit, skip the remaining requests: they would hit it too.
     let rate_limited = AtomicBool::new(false);
     let results: Vec<_> = commits
         .into_par_iter()

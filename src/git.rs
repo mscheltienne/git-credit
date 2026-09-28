@@ -9,10 +9,6 @@ use crate::filter::ExclusionFilter;
 
 static PR_NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\(#(\d+)\)").unwrap());
 
-// ---------------------------------------------------------------------------
-// Data types
-// ---------------------------------------------------------------------------
-
 /// Identifies a commit author.
 #[derive(Debug, Clone)]
 pub struct Author {
@@ -37,7 +33,7 @@ pub struct FileDelta {
 pub struct CommitInfo {
     pub oid: git2::Oid,
     pub author: Author,
-    /// Author time in epoch seconds (UTC), as `git log --format='%aI'` shows it.
+    /// Author (not committer) time, in seconds since the Unix epoch.
     pub author_time: i64,
     /// PR number of a squash-merge candidate: a commit whose first line contains
     /// `(#N)`.
@@ -46,11 +42,7 @@ pub struct CommitInfo {
     pub deletions: u64,
 }
 
-// ---------------------------------------------------------------------------
-// Public functions
-// ---------------------------------------------------------------------------
-
-/// Open a git repository at the given path.
+/// Open the repository containing `path`, searching parent directories.
 pub fn open_repo(path: &Path) -> Result<Repository, CreditError> {
     Repository::discover(path).map_err(|source| CreditError::RepoOpen {
         path: path.display().to_string(),
@@ -128,8 +120,9 @@ pub fn walk_commits(
     Ok(commits)
 }
 
-/// Compute the diff stats for a single commit against its first parent
-/// (or against an empty tree for root commits).
+/// Per-file line stats of `commit` against its first parent, or the empty tree for a
+/// root commit. Files without added or deleted lines (binary, mode-only, pure renames)
+/// are omitted.
 pub fn diff_commit(
     repo: &Repository,
     commit: &git2::Commit,
@@ -144,11 +137,8 @@ pub fn diff_commit(
     let mut opts = DiffOptions::new();
     let mut diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))?;
 
-    // Collapse delete+add pairs that look like a rename (≥50% similar, libgit2
-    // default) into a single rename-delta with the in-place line stats. Without
-    // this, a `git mv` shows up as `−N + N` for every renamed file's full
-    // content, dwarfing the actual line edits in the commit. Matches the
-    // behavior of `git diff -M`, which is git CLI's default.
+    // Pair deleted and added files that are ≥50% similar (libgit2's default threshold,
+    // as in `git diff -M`) so a rename counts only its edited lines instead of −N +N.
     let mut find_opts = DiffFindOptions::new();
     find_opts.renames(true);
     diff.find_similar(Some(&mut find_opts))?;
@@ -180,7 +170,7 @@ pub fn diff_commit(
     Ok(deltas)
 }
 
-/// Extract a PR number from a commit message if it ends with `(#NNN)`.
+/// PR number from the last `(#NNN)` on the message's first line.
 pub fn extract_pr_number(message: &str) -> Option<u64> {
     let first_line = message.lines().next().unwrap_or("");
     PR_NUMBER_RE
@@ -189,8 +179,7 @@ pub fn extract_pr_number(message: &str) -> Option<u64> {
         .and_then(|cap| cap[1].parse().ok())
 }
 
-/// Parse a `YYYY-MM-DD` date string into seconds since the Unix epoch
-/// (midnight UTC).
+/// Parse a `YYYY-MM-DD` date into seconds since the Unix epoch, at midnight UTC.
 pub fn parse_date_to_epoch(date_str: &str) -> Result<i64, CreditError> {
     parse_date_inner(date_str).ok_or_else(|| CreditError::InvalidDate {
         input: date_str.to_string(),
@@ -210,12 +199,8 @@ fn parse_date_inner(date_str: &str) -> Option<i64> {
     (civil_from_days(days) == (year, month, day)).then_some(days * 86400)
 }
 
-// ---------------------------------------------------------------------------
-// Private helpers
-// ---------------------------------------------------------------------------
-
-/// Convert a civil date to days since the Unix epoch (1970-01-01).
-/// Algorithm from Howard Hinnant's `chrono`-compatible date library.
+/// Days from 1970-01-01 to a proleptic Gregorian date (Howard Hinnant's
+/// `days_from_civil`).
 #[allow(clippy::similar_names)]
 fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let yr = if month <= 2 { year - 1 } else { year };
@@ -226,10 +211,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
-/// Convert days since the Unix epoch (1970-01-01) back to a civil date.
-/// Inverse of [`days_from_civil`]; same Howard Hinnant algorithm.
-///
-/// Returned `(year, month, day)` with `month ∈ 1..=12` and `day ∈ 1..=31`.
+/// Inverse of [`days_from_civil`]: `(year, month 1..=12, day 1..=31)`.
 #[allow(clippy::similar_names)]
 fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let z = days + 719_468;
@@ -246,8 +228,7 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
     (year, month, day)
 }
 
-/// Format an epoch-seconds (UTC) value as an ISO 8601 string with `Z` suffix
-/// and second precision: `YYYY-MM-DDTHH:MM:SSZ`.
+/// Format epoch seconds as UTC `YYYY-MM-DDTHH:MM:SSZ` (the JSON `author_date`).
 pub fn format_utc_iso8601(epoch: i64) -> String {
     let days = epoch.div_euclid(86_400);
     let seconds_of_day = epoch.rem_euclid(86_400);
@@ -257,10 +238,6 @@ pub fn format_utc_iso8601(epoch: i64) -> String {
     let second = seconds_of_day % 60;
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -306,11 +283,8 @@ mod tests {
     fn diff_commit_on_tempdir_repo() {
         let dir = tempfile::tempdir().unwrap();
         let repo = Repository::init(dir.path()).unwrap();
-
-        // Configure author.
         let sig = git2::Signature::now("Test Author", "test@example.com").unwrap();
 
-        // Create initial commit with one file.
         let blob = repo.blob(b"line1\nline2\n").unwrap();
         let mut builder = repo.treebuilder(None).unwrap();
         builder.insert("file.txt", blob, 0o100_644).unwrap();
@@ -320,7 +294,6 @@ mod tests {
             .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
             .unwrap();
 
-        // Create second commit adding a line.
         let blob2 = repo.blob(b"line1\nline2\nline3\n").unwrap();
         let mut builder2 = repo.treebuilder(None).unwrap();
         builder2.insert("file.txt", blob2, 0o100_644).unwrap();
@@ -347,18 +320,14 @@ mod tests {
         assert_eq!(deltas[0].deletions, 0);
     }
 
-    /// A pure rename (identical content, just a different path) must not
-    /// double-count the file content as `−N + N`. `find_similar` collapses
-    /// the delete+add pair into a single rename delta with 0 additions and
-    /// 0 deletions, matching `git diff -M`.
+    /// A pure rename yields no delta instead of −N +N.
     #[test]
     fn diff_commit_pure_rename_has_zero_line_stats() {
         let dir = tempfile::tempdir().unwrap();
         let repo = Repository::init(dir.path()).unwrap();
         let sig = git2::Signature::now("Test Author", "test@example.com").unwrap();
 
-        // ~600 bytes of identical content in both commits — well above the
-        // libgit2 default similarity floor, so this is unambiguously a rename.
+        // Same blob at both paths: libgit2 scores it as an exact rename.
         let content: Vec<u8> = (0..30)
             .flat_map(|i| format!("line {i}\n").into_bytes())
             .collect();
@@ -388,19 +357,15 @@ mod tests {
 
         let deltas = diff_commit(&repo, &repo.find_commit(c2).unwrap()).unwrap();
 
-        // A delta with both additions == 0 and deletions == 0 is dropped by
-        // `diff_commit` (the `if adds > 0 || dels > 0` guard), so the pure
-        // rename produces zero deltas — the strongest possible assertion that
-        // we are not counting the file content as churn.
+        // `diff_commit` drops deltas without line changes, so the collapsed rename
+        // leaves none.
         assert!(
             deltas.is_empty(),
             "pure rename emitted deltas: {deltas:?} — find_similar didn't collapse them"
         );
     }
 
-    /// A rename combined with an in-place edit reports only the edit's line
-    /// stats, attributed to the new path. Without `find_similar` this would
-    /// be `−full_old_size + full_new_size`, drastically inflating the totals.
+    /// A rename with an edit reports only the edited lines, under the new path.
     #[test]
     fn diff_commit_rename_with_edit_reports_in_place_stats() {
         let dir = tempfile::tempdir().unwrap();
@@ -451,7 +416,6 @@ mod tests {
         let repo = Repository::init(dir.path()).unwrap();
         let sig = git2::Signature::now("Alice", "alice@example.com").unwrap();
 
-        // Create two commits.
         let blob1 = repo.blob(b"hello\n").unwrap();
         let mut tb1 = repo.treebuilder(None).unwrap();
         tb1.insert("file.txt", blob1, 0o100_644).unwrap();
