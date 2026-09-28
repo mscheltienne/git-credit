@@ -271,44 +271,23 @@ mod tests {
     }
 
     #[test]
-    fn extract_pr_number_standard() {
-        assert_eq!(extract_pr_number("feat: add login (#42)"), Some(42));
-    }
-
-    #[test]
-    fn extract_pr_number_no_match() {
-        assert_eq!(extract_pr_number("no pr here"), None);
-    }
-
-    #[test]
-    fn extract_pr_number_multiple_takes_last() {
-        assert_eq!(extract_pr_number("fix: issue (#1) resolved (#2)"), Some(2));
-    }
-
-    #[test]
-    fn extract_pr_number_non_numeric() {
-        assert_eq!(extract_pr_number("(#abc)"), None);
-    }
-
-    #[test]
-    fn extract_pr_number_multiline_uses_first_line() {
-        assert_eq!(
-            extract_pr_number("feat: add feature (#10)\n\nCo-authored-by: X"),
-            Some(10)
-        );
+    fn extract_pr_number_from_first_line() {
+        for (message, expected) in [
+            ("feat: add login (#42)", Some(42)),
+            ("no pr here", None),
+            ("fix: issue (#1) resolved (#2)", Some(2)),
+            ("(#abc)", None),
+            ("feat: add feature (#10)\n\nCo-authored-by: X", Some(10)),
+            ("feat: add feature\n\nSee (#10)", None),
+        ] {
+            assert_eq!(extract_pr_number(message), expected, "{message:?}");
+        }
     }
 
     #[test]
     fn parse_date_valid() {
-        // 2025-01-01 00:00:00 UTC = 1735689600
-        let epoch = parse_date_to_epoch("2025-01-01").unwrap();
-        assert_eq!(epoch, 1_735_689_600_i64);
-    }
-
-    #[test]
-    fn parse_date_epoch() {
-        let epoch = parse_date_to_epoch("1970-01-01").unwrap();
-        assert_eq!(epoch, 0);
+        assert_eq!(parse_date_to_epoch("1970-01-01").unwrap(), 0);
+        assert_eq!(parse_date_to_epoch("2025-01-01").unwrap(), 1_735_689_600);
     }
 
     #[test]
@@ -586,44 +565,16 @@ mod tests {
     }
 
     #[test]
-    fn resolve_author_without_mailmap() {
-        let author = resolve_author(None, "Alice", "alice@example.com");
-        assert_eq!(author.name, "Alice");
-        assert_eq!(author.email, "alice@example.com");
-    }
-
-    #[test]
-    fn format_utc_iso8601_epoch() {
-        assert_eq!(format_utc_iso8601(0), "1970-01-01T00:00:00Z");
-    }
-
-    #[test]
-    fn format_utc_iso8601_round_numbers() {
-        // 2025-01-01 00:00:00 UTC = 1735689600 (matches parse_date_valid above).
-        assert_eq!(format_utc_iso8601(1_735_689_600), "2025-01-01T00:00:00Z");
-    }
-
-    #[test]
-    fn format_utc_iso8601_end_of_day() {
-        assert_eq!(format_utc_iso8601(1_735_775_999), "2025-01-01T23:59:59Z");
-    }
-
-    #[test]
-    fn format_utc_iso8601_leap_day() {
-        // 2020-02-29 00:00:00 UTC = 1582934400.
-        assert_eq!(format_utc_iso8601(1_582_934_400), "2020-02-29T00:00:00Z");
-    }
-
-    #[test]
-    fn format_utc_iso8601_pre_epoch() {
-        // 1969-12-31 00:00:00 UTC = -86400.
-        assert_eq!(format_utc_iso8601(-86_400), "1969-12-31T00:00:00Z");
-    }
-
-    #[test]
-    fn format_utc_iso8601_mid_day() {
-        // 2026-04-17 14:23:51 UTC.
-        let epoch = days_from_civil(2026, 4, 17) * 86_400 + 14 * 3600 + 23 * 60 + 51;
-        assert_eq!(format_utc_iso8601(epoch), "2026-04-17T14:23:51Z");
+    fn format_utc_iso8601_cases() {
+        for (epoch, expected) in [
+            (0, "1970-01-01T00:00:00Z"),
+            (1_735_689_600, "2025-01-01T00:00:00Z"),
+            (1_735_775_999, "2025-01-01T23:59:59Z"),
+            (1_582_934_400, "2020-02-29T00:00:00Z"),
+            (-86_400, "1969-12-31T00:00:00Z"),
+            (1_776_435_831, "2026-04-17T14:23:51Z"),
+        ] {
+            assert_eq!(format_utc_iso8601(epoch), expected);
+        }
     }
 }

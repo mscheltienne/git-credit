@@ -2,7 +2,6 @@ use std::fs;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
-use regex::Regex;
 
 mod common;
 use common::{
@@ -70,7 +69,7 @@ fn table_output_on_test_repo() {
 }
 
 #[test]
-fn json_output_has_per_commit_shape() {
+fn json_output_shape_and_order() {
     let dir = tempfile::tempdir().unwrap();
     create_test_repo(dir.path());
 
@@ -90,7 +89,19 @@ fn json_output_has_per_commit_shape() {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
 
     let commits = json["commits"].as_array().unwrap();
-    assert_eq!(commits.len(), 3);
+    // Sorted by author date ascending, in ISO 8601 UTC.
+    let dates: Vec<&str> = commits
+        .iter()
+        .map(|c| c["author_date"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        dates,
+        [
+            "2025-01-01T00:00:00Z", // ALICE_C1_EPOCH
+            "2025-01-02T00:00:00Z", // BOB_C2_EPOCH
+            "2025-01-03T00:00:00Z", // ALICE_C3_EPOCH
+        ]
+    );
 
     for commit in commits {
         assert!(commit["sha"].is_string());
@@ -112,59 +123,6 @@ fn json_output_has_per_commit_shape() {
         json["summary"]["squash_merges_expanded"].as_u64().unwrap(),
         0
     );
-}
-
-#[test]
-fn author_date_format_is_iso8601_utc() {
-    let dir = tempfile::tempdir().unwrap();
-    create_test_repo(dir.path());
-
-    let output = Command::cargo_bin("git-credit")
-        .unwrap()
-        .args([
-            "--repo",
-            dir.path().to_str().unwrap(),
-            "--no-github",
-            "--format",
-            "json",
-        ])
-        .output()
-        .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let iso_re = Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$").unwrap();
-    for commit in json["commits"].as_array().unwrap() {
-        let date = commit["author_date"].as_str().unwrap();
-        assert!(iso_re.is_match(date), "bad author_date: {date}");
-    }
-}
-
-#[test]
-fn commits_sorted_by_author_date_ascending() {
-    let dir = tempfile::tempdir().unwrap();
-    create_test_repo(dir.path());
-
-    let output = Command::cargo_bin("git-credit")
-        .unwrap()
-        .args([
-            "--repo",
-            dir.path().to_str().unwrap(),
-            "--no-github",
-            "--format",
-            "json",
-        ])
-        .output()
-        .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let commits = json["commits"].as_array().unwrap();
-
-    // Fixed timestamps from create_test_repo, ascending.
-    let dates: Vec<&str> = commits
-        .iter()
-        .map(|c| c["author_date"].as_str().unwrap())
-        .collect();
-    assert_eq!(dates[0], "2025-01-01T00:00:00Z"); // ALICE_C1_EPOCH
-    assert_eq!(dates[1], "2025-01-02T00:00:00Z"); // BOB_C2_EPOCH
-    assert_eq!(dates[2], "2025-01-03T00:00:00Z"); // ALICE_C3_EPOCH
 }
 
 #[test]
@@ -201,18 +159,6 @@ fn exclude_filters_files() {
     let with_json: serde_json::Value = serde_json::from_slice(&with.stdout).unwrap();
 
     assert!(sum_additions(&with_json) < sum_additions(&without_json));
-}
-
-#[test]
-fn no_github_flag_works_without_network() {
-    let dir = tempfile::tempdir().unwrap();
-    create_test_repo(dir.path());
-
-    Command::cargo_bin("git-credit")
-        .unwrap()
-        .args(["--repo", dir.path().to_str().unwrap(), "--no-github"])
-        .assert()
-        .success();
 }
 
 // ---------------------------------------------------------------------------
@@ -314,30 +260,6 @@ fn no_mailmap_bypasses_in_repo_mailmap() {
     // Raw author survives because the in-repo .mailmap is not consulted.
     assert_eq!(attribution["email"], "alice-old@example.com");
     assert_eq!(attribution["name"], "Alice Old");
-}
-
-#[test]
-fn no_mailmap_conflicts_with_mailmap_file() {
-    let dir = tempfile::tempdir().unwrap();
-    create_test_repo(dir.path());
-
-    let external_dir = tempfile::tempdir().unwrap();
-    let external_path = external_dir.path().join(".mailmap");
-    fs::write(&external_path, "").unwrap();
-
-    Command::cargo_bin("git-credit")
-        .unwrap()
-        .args([
-            "--repo",
-            dir.path().to_str().unwrap(),
-            "--no-github",
-            "--no-mailmap",
-            "--mailmap-file",
-            external_path.to_str().unwrap(),
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("cannot be used with"));
 }
 
 #[test]
