@@ -6,7 +6,7 @@ ci:
 
 repos:
   - repo: https://github.com/crate-ci/typos
-    rev: typos-dict-v0.14.2
+    rev: v1.52.0
     hooks:
       - id: typos
 
